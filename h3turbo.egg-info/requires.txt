@@ -1,0 +1,9 @@
+torch>=2.4
+safetensors>=0.4
+numpy
+
+[dev]
+pytest
+
+[video]
+av

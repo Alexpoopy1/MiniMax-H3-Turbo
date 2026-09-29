@@ -1,0 +1,13 @@
+Metadata-Version: 2.4
+Name: h3turbo
+Version: 0.1.0
+Summary: Compact, fast, omni-modal (text/image/video/audio) generator in the MiniMax H3 mould, for RTX 3050 and up
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: torch>=2.4
+Requires-Dist: safetensors>=0.4
+Requires-Dist: numpy
+Provides-Extra: video
+Requires-Dist: av; extra == "video"
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"

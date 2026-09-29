@@ -1,0 +1,2 @@
+[console_scripts]
+h3turbo = h3turbo.cli:main

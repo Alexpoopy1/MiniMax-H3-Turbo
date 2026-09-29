@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "h3turbo"
+version = "0.1.0"
+description = "Compact, fast, omni-modal (text/image/video/audio) generator in the MiniMax H3 mould, for RTX 3050 and up"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["torch>=2.4", "safetensors>=0.4", "numpy"]
+
+[project.optional-dependencies]
+video = ["av"]  # mp4 (h264 + aac) export
+dev = ["pytest"]
+
+[project.scripts]
+h3turbo = "h3turbo.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["h3turbo*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
