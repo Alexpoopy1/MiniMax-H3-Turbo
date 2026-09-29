@@ -56,6 +56,8 @@ class AudioVAE(nn.Module):
             dec += [ResUnit(ch[i], d) for d in dil]
         self.decoder = nn.Sequential(*dec)
         self.dec_out = CausalConv1d(ch[0], 1, 7)
+        with torch.no_grad():  # start as a near-deterministic autoencoder; the KL term relaxes it
+            self.enc_out.conv.bias[cfg.latent_ch :].fill_(-6.0)
 
         self.register_buffer("latent_mean", torch.zeros(cfg.latent_ch))
         self.register_buffer("latent_std", torch.ones(cfg.latent_ch))

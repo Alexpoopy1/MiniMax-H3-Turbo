@@ -161,13 +161,20 @@ def build_segments(
     audio: Optional[Track],
     refs: Sequence[RefTokens] = (),
     resampled: Sequence[Segment] = (),
+    text_pos: Optional[torch.Tensor] = None,
 ) -> Tuple[List[Segment], dict]:
-    """-> (segments, index) where index maps 'video'/'audio' to their segment position."""
+    """-> (segments, index) where index maps 'video'/'audio' to their segment position.
+    `text_pos` [B, L, 3] overrides the default positions (padded training batches)."""
     segs: List[Segment] = []
     index = {}
     if text is not None:
         segs.append(
-            Segment("text", text, text_positions(text.shape[1], text.device), torch.full(text.shape[:2], G_TEXT, device=text.device))
+            Segment(
+                "text",
+                text,
+                text_positions(text.shape[1], text.device) if text_pos is None else text_pos,
+                torch.full(text.shape[:2], G_TEXT, device=text.device),
+            )
         )
     for r in refs:
         g = G_VIDEO_CLEAN if r.modality == "video" else G_AUDIO_CLEAN

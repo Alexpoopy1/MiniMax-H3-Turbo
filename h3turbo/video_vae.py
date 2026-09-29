@@ -138,6 +138,8 @@ class VideoVAE(nn.Module):
         self.decoder = nn.Sequential(*dec)
         self.dec_norm = ChannelRMSNorm(ch[0])
         self.dec_out = CausalConv3d(ch[0], 3, (1, 3, 3))
+        with torch.no_grad():  # start as a near-deterministic autoencoder; the KL term relaxes it
+            self.enc_out.conv.bias[cfg.latent_ch :].fill_(-6.0)
 
         # latent normalisation (fitted after training so latents are ~unit variance)
         self.register_buffer("latent_mean", torch.zeros(cfg.latent_ch))
