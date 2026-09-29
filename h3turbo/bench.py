@@ -17,7 +17,7 @@ from typing import Dict, Optional
 import torch
 from torch.utils.flop_counter import FlopCounterMode
 
-from .config import H3TurboConfig, VIDEO_SPATIAL
+from .config import H3TurboConfig, VIDEO_SPATIAL, VIDEO_TEMPORAL
 from .layout import Geometry, snap_frames, snap_size
 from .model import H3TurboTransformer
 from .video_vae import VideoVAE
@@ -36,7 +36,8 @@ class Estimate:
     tier: str
     params: Dict[str, float]
     weights_gb: Dict[str, float]  # GPU-resident weights per precision
-    activations_gb: float
+    activations_gb: float  # peak of transformer and VAE-decode activations (they run one after the other)
+    decode_gb: float
     tokens: Dict[str, int]
     forward_tflop: float
     generation_tflop: float
@@ -111,6 +112,12 @@ def estimate(
     }
     # peak per-layer activations without grad: x, qkv, attn out, gated ffn hidden, gathered modulation
     act = n_tok * (14 * H + 2 * F_) * 2 / GB
+    # VAE decode (tiled, streamed 2 latent frames at a time): ~6 live full-res feature maps
+    # of the widest high-res stage over one tile, plus the output and its blend accumulators
+    tile = 32 * VIDEO_SPATIAL
+    th, tw = min(geom.height, tile), min(geom.width, tile)
+    ch0 = cfg.video_vae.channels[0]
+    decode = (ch0 * 2 * VIDEO_TEMPORAL * th * tw * 6 + 3 * geom.num_frames * geom.height * geom.width * 1.3) * vae_dtype_bytes / GB
     fwd = forward_flops(cfg, n_tok)
     vae = _vae_decode_flops(cfg, geom)
     return Estimate(
@@ -123,7 +130,8 @@ def estimate(
             "video_vae_M": vae_v / 1e6,
         },
         weights_gb=weights,
-        activations_gb=act,
+        activations_gb=max(act, decode),
+        decode_gb=decode,
         tokens={"video": geom.video_tokens, "audio": geom.audio_tokens if with_audio else 0, "text": text_tokens, "total": n_tok},
         forward_tflop=fwd / 1e12,
         generation_tflop=(fwd * steps + vae) / 1e12,
@@ -140,7 +148,7 @@ def format_report(e: Estimate, steps: int, tflops: Optional[float] = None) -> st
     lines = [f"== {e.tier} ==", "parameters:"]
     lines += [f"  {k:24s} {v:10.1f}" for k, v in e.params.items()]
     lines.append(f"tokens: {e.tokens}")
-    lines.append("GPU weights (GB):  " + "  ".join(f"{k}={v:.2f}" for k, v in e.weights_gb.items()) + f"   activations~{e.activations_gb:.2f}")
+    lines.append("GPU weights (GB):  " + "  ".join(f"{k}={v:.2f}" for k, v in e.weights_gb.items()) + f"   peak activations~{e.activations_gb:.2f} (VAE decode {e.decode_gb:.2f})")
     lines.append(f"work: {e.forward_tflop:.2f} TFLOP/forward, {e.generation_tflop:.2f} TFLOP per generation ({steps} steps + VAE decode {e.vae_decode_tflop:.2f})")
     if tflops:
         lines.append(f"if sustained {tflops:g} TFLOPS (your assumption, unmeasured): ~{e.generation_tflop / tflops:.1f} s per generation")

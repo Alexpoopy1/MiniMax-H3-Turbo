@@ -41,7 +41,7 @@ from .layout import (
     video_positions,
 )
 from .model import H3TurboTransformer, Segment
-from .sampler import euler_step, flow_sigmas, shift_sigmas
+from .sampler import euler_step, flow_sigmas
 from .text import ByteTextEncoder, ExternalTextAdapter
 from .video_vae import VideoVAE
 
@@ -81,6 +81,8 @@ class Generation:
     audio: Optional[torch.Tensor]  # float32 [S] mono in [-1, 1]
     fps: int
     sample_rate: int = AUDIO_SAMPLE_RATE
+    noise: Optional[dict] = None  # initial tokens per generated modality (return_latents=True)
+    latents: Optional[dict] = None  # final tokens per generated modality (return_latents=True)
 
 
 def frames_from_uint8(video: torch.Tensor) -> torch.Tensor:
@@ -122,6 +124,13 @@ class H3TurboPipeline:
         from .io import save_checkpoint
 
         save_checkpoint(path, self, dtype)
+
+    def compile(self, **kwargs) -> "H3TurboPipeline":
+        """torch.compile each transformer block in place (state-dict keys are unchanged).
+        The first generation at a new resolution pays a compile; later ones reuse it."""
+        for blk in self.model.blocks:
+            blk.compile(**kwargs)
+        return self
 
     # ------------------------------------------------------------------ placement
     @property
@@ -198,7 +207,7 @@ class H3TurboPipeline:
             j0 = latent_index_of_frame(vc.frame_index)
             n = min(Tc, T - j0)
             if n <= 0:
-                continue
+                raise ValueError(f"VideoCond frame_index {vc.frame_index} is past the end of the {geom.num_frames}-frame video")
             tok = tok.view(1, Tc, hp * wp, D_v)[:, :n]
             if vc.mask is None:
                 m = torch.ones(hp * wp, dtype=torch.bool, device=dev)
@@ -219,7 +228,7 @@ class H3TurboPipeline:
             a0 = max(0, round(ac.start_sec * AUDIO_LATENT_RATE))
             n = min(tok.shape[1], Na - a0)
             if n <= 0:
-                continue
+                raise ValueError(f"AudioCond start_sec {ac.start_sec} is past the end of the {geom.duration:.2f} s clip")
             clean_a[:, a0 : a0 + n] = tok[:, :n]
             pin_a[:, a0 : a0 + n] = True
 
@@ -326,6 +335,7 @@ class H3TurboPipeline:
         negative_embeds: Optional[torch.Tensor] = None,
         ref_budget: Optional[int] = None,
         callback: Optional[Callable[[int, int], None]] = None,
+        return_latents: bool = False,
     ) -> Generation:
         """Generate video and/or audio.
 
@@ -333,6 +343,7 @@ class H3TurboPipeline:
                    video is video-to-audio; only video from pinned audio is audio-to-video.
         context    pinned frames / audio and off-timeline references (see OmniContext).
         steps      2-4 for Turbo checkpoints; 20+ for an undistilled one.
+        return_latents  also return the start noise and final tokens (reflow training pairs).
         guidance   CFG scale for undistilled models (1 = off, the default); the guidance
                    value fed to the model when it has distilled guidance.
         """
@@ -360,6 +371,7 @@ class H3TurboPipeline:
         if not self.model.cfg.guidance_embed and cfg_scale != 1.0:
             text_u = self.encode_text(negative_prompt, negative_embeds)
 
+        noise = {k: tracks[k].x.clone().cpu() for k in gen} if return_latents else None
         sig = flow_sigmas(steps, shift)
         state = self._denoise(text_c, text_u, tracks, refs, resampled, sig, sig, cfg_scale, distilled, callback)
 
@@ -368,7 +380,8 @@ class H3TurboPipeline:
             video = self.decode_video_tokens(state["video"], geom)
         if "audio" in gen:
             audio = self.decode_audio_tokens(state["audio"])
-        return Generation(video, audio, fps)
+        latents = {k: state[k].cpu() for k in gen} if return_latents else None
+        return Generation(video, audio, fps, noise=noise, latents=latents)
 
     @torch.no_grad()
     def refine(
@@ -420,7 +433,7 @@ class H3TurboPipeline:
             pos = audio_positions(geom.audio_tokens, geom.fps, device=dev)[:, : tok.shape[1]]
             tracks["audio"] = Track(tok, pos, torch.ones(tok.shape[:2], dtype=torch.bool, device=dev), False)
 
-        sig = shift_sigmas(torch.linspace(strength, 0.0, steps + 1), shift)
+        sig = flow_sigmas(steps, shift, start=strength)
         text_c = self.encode_text(prompt, text_embeds)
         state = self._denoise(text_c, None, tracks, refs, [], sig, sig, 1.0, None, callback)
         return Generation(self.decode_video_tokens(state["video"], geom), gen.audio, gen.fps)

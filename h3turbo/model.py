@@ -19,6 +19,7 @@ import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
 
 from .config import ModalitySpec, TransformerConfig
+from .quant import cast_
 from .layers import (
     AdaLNBank,
     Block,
@@ -208,7 +209,8 @@ class H3TurboTransformer(nn.Module):
         self.adaln.to(device=adaln_device, dtype=torch.float32)
         for name, mod in self.named_children():
             if name != "adaln":
-                mod.to(device=device, dtype=dtype)
+                mod.to(device=device)
+                cast_(mod, dtype)
         return self
 
     def num_params(self, include_adaln: bool = True) -> int:

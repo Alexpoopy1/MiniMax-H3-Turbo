@@ -19,7 +19,7 @@ from h3turbo.config import AUDIO_HOP, AUDIO_SAMPLE_RATE, make_config
 from h3turbo.io import build_modules, build_pipeline, save_checkpoint
 from h3turbo.layout import patchify_video
 from h3turbo.pipeline import H3TurboPipeline
-from h3turbo.training import EMA, Geo, cosine_lr, flow_loss, kl_term, stft_l1
+from h3turbo.training import EMA, Geo, cosine_lr, flow_loss, kl_term
 
 HI, LO, T_FRAMES, FPS = 96, 64, 9, 8
 AUDIO_SAMPLES = 45 * AUDIO_HOP  # 9 frames @ 8 fps = 1.125 s
@@ -43,14 +43,19 @@ def train_video_vae(vae, steps, bs, lr, seed):
         side = int(rng.choice([LO, HI]))
         x = torch.stack([scene_frames(toy.sample_scene(rng), side, 5) for _ in range(bs)])
         rec, mean, logvar = vae(x)
-        l1 = (rec - x).abs().mean()
-        loss = l1 + (rec - x).pow(2).mean() + 1e-6 * kl_term(mean, logvar)
+        err = (rec - x).abs()
+        # squares cover ~8% of pixels, so a plain mean is minimised by painting the background
+        # (a plateau that a low average L1 hides); weight the foreground and track it separately
+        fg = ((x - toy.BG).abs().amax(1, keepdim=True) > 0.3).float()
+        weighted = (err * (1 + 15 * fg)).mean()
+        loss = weighted + 1e-6 * kl_term(mean, logvar)
         opt.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(vae.parameters(), 1.0)
         opt.step()
         if step % 50 == 0 or step == steps - 1:
-            log(f"vae_video {step}/{steps} l1={l1.item():.4f}")
+            fg_l1 = (err * fg).sum().item() / (3 * fg.sum().item() + 1e-9)
+            log(f"vae_video {step}/{steps} l1={err.mean().item():.4f} foreground_l1={fg_l1:.4f} (1.6 = paints background)")
 
 
 def train_audio_vae(vae, steps, bs, lr, seed):
@@ -68,15 +73,15 @@ def train_audio_vae(vae, steps, bs, lr, seed):
         x = torch.stack(waves)[:, None]
         rec, mean, logvar = vae(x)
         l1 = (rec - x).abs().mean()
-        spec = stft_l1(rec[:, 0], x[:, 0])
-        # spectral loss leads: it is phase-invariant, and pitch/envelope are what matter here
-        loss = 0.1 * l1 + spec + 1e-6 * kl_term(mean, logvar)
+        # the toy audio is a smooth 3-12 Hz waveform, so plain waveform L1 is the right loss
+        # (a spectral loss is for real audio; see h3turbo.training.stft_loss)
+        loss = l1 + 1e-6 * kl_term(mean, logvar)
         opt.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(vae.parameters(), 1.0)
         opt.step()
         if step % 50 == 0 or step == steps - 1:
-            log(f"vae_audio {step}/{steps} l1={l1.item():.4f} stft={spec.item():.4f}")
+            log(f"vae_audio {step}/{steps} l1={l1.item():.4f} (silence = {x.abs().mean().item():.3f})")
 
 
 # --------------------------------------------------------------------------- latent cache

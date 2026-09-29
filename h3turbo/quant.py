@@ -17,6 +17,21 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 INT4_GROUP = 64
+# tensors that keep their own precision when a model is cast: normalisation stats and
+# quantisation scales are tiny and precision-sensitive
+KEEP_PRECISION = ("latent_mean", "latent_std", "scale")
+
+
+def cast_(module: nn.Module, dtype: torch.dtype) -> nn.Module:
+    """Cast floating params/buffers to `dtype`, except those in KEEP_PRECISION."""
+    for m in module.modules():
+        for p in m._parameters.values():
+            if p is not None and p.is_floating_point():
+                p.data = p.data.to(dtype)
+        for k, b in m._buffers.items():
+            if b is not None and b.is_floating_point() and k not in KEEP_PRECISION:
+                m._buffers[k] = b.to(dtype)
+    return module
 
 
 class Int8Linear(nn.Module):

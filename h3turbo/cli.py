@@ -76,10 +76,19 @@ def cmd_bench(a):
 
 
 def cmd_init(a):
-    from .io import build_pipeline, save_checkpoint
+    from .io import build_modules, save_checkpoint
+    from .pipeline import H3TurboPipeline
 
     cfg = make_config(a.tier)
-    pipe = build_pipeline(cfg, "cpu", torch.float32)
+    # built directly in fp16 so the xl tier (4.7B) needs ~10 GB of RAM, not ~19 GB, and
+    # saving does not have to make a second copy
+    prev = torch.get_default_dtype()
+    torch.set_default_dtype(torch.float16)
+    try:
+        pipe = H3TurboPipeline(*build_modules(cfg), cfg)
+    finally:
+        torch.set_default_dtype(prev)
+    pipe.model.adaln.float()  # the AdaLN bank is always fp32
     save_checkpoint(a.out, pipe, dtype=torch.float16, extra_meta={"trained": "no (random init)"})
     print(f"wrote {a.out}\nWARNING: randomly initialised, UNTRAINED. It has the right architecture and I/O but produces noise until trained.")
 

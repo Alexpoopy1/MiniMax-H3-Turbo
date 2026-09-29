@@ -47,3 +47,21 @@ def test_int4_skips_layers_not_divisible_by_group():
     net = torch.nn.Sequential(torch.nn.Linear(100, 8))
     quantize_(net, "int4")
     assert isinstance(net[0], torch.nn.Linear)
+
+
+def test_casting_a_quantised_model_keeps_scales_in_full_precision():
+    """bf16 has 8 mantissa bits: casting the per-channel scales to it would add ~0.4%
+    error to every weight. Placement must leave them alone."""
+    from h3turbo.model import H3TurboTransformer
+    from h3turbo.config import make_config
+
+    m = H3TurboTransformer(make_config("nano").transformer)
+    quantize_(m.blocks, "int8")
+    scale_before = {n: b.clone() for n, b in m.named_buffers() if n.endswith("scale")}
+    assert scale_before
+    m.to_inference("cpu", torch.bfloat16)
+    for n, b in m.named_buffers():
+        if n.endswith("scale"):
+            assert b.dtype == torch.float16 and torch.equal(b, scale_before[n]), n
+    assert m.in_proj["video"].weight.dtype == torch.bfloat16
+    assert m.blocks[0].attn.qkv.qweight.dtype == torch.int8

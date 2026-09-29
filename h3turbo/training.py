@@ -188,14 +188,19 @@ def cosine_lr(step: int, total: int, base: float, warmup: int = 100, floor: floa
 
 
 # --------------------------------------------------------------------------- VAE losses
-def stft_l1(pred: torch.Tensor, target: torch.Tensor, sizes=(256, 1024, 2048)) -> torch.Tensor:
-    """Multi-resolution log-magnitude STFT L1. pred/target [B, S]."""
+def stft_loss(pred: torch.Tensor, target: torch.Tensor, sizes=(256, 1024, 2048)) -> torch.Tensor:
+    """Multi-resolution STFT loss: log-magnitude L1 plus spectral convergence. The log term
+    alone averages over mostly-silent bins and is happy with quiet noise; spectral
+    convergence (relative Frobenius error of the magnitudes) weights the bins that hold
+    the energy. pred/target [B, S]."""
     loss = 0.0
     for n in sizes:
         win = torch.hann_window(n, device=pred.device)
         a = torch.stft(pred, n, n // 4, window=win, return_complex=True).abs()
         b = torch.stft(target, n, n // 4, window=win, return_complex=True).abs()
-        loss = loss + (torch.log(a + 1e-3) - torch.log(b + 1e-3)).abs().mean()
+        log_term = (torch.log(a + 1e-3) - torch.log(b + 1e-3)).abs().mean()
+        conv = (a - b).flatten(1).norm(dim=1) / b.flatten(1).norm(dim=1).clamp(min=1e-6)
+        loss = loss + log_term + conv.mean()
     return loss / len(sizes)
 
 

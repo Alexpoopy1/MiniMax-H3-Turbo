@@ -15,27 +15,12 @@ from .audio_vae import AudioVAE
 from .config import H3TurboConfig
 from .model import H3TurboTransformer
 from .pipeline import H3TurboPipeline
-from .quant import quantize_, quantize_structure_
+from .quant import KEEP_PRECISION, cast_, quantize_, quantize_structure_
 from .text import build_text_encoder
 from .video_vae import VideoVAE
 
 FORMAT = "h3turbo-1"
 PARTS = ("transformer", "video_vae", "audio_vae", "text_encoder")
-# tensors that keep their own precision when a model is cast
-_KEEP_FP32 = ("latent_mean", "latent_std", "scale")
-
-
-def cast_(module: torch.nn.Module, dtype: torch.dtype) -> torch.nn.Module:
-    """Cast floating params/buffers to `dtype`, except normalisation stats and
-    quantisation scales (tiny, and precision-sensitive)."""
-    for m in module.modules():
-        for k, p in m._parameters.items():
-            if p is not None and p.is_floating_point():
-                p.data = p.data.to(dtype)
-        for k, b in m._buffers.items():
-            if b is not None and b.is_floating_point() and k not in _KEEP_FP32:
-                m._buffers[k] = b.to(dtype)
-    return module
 
 
 def auto_dtype(device) -> torch.dtype:
@@ -82,7 +67,7 @@ def save_checkpoint(path: str, pipe: H3TurboPipeline, dtype: torch.dtype = torch
             "text_encoder": pipe.text_encoder,
         }[part]
         for k, v in module.state_dict().items():
-            keep = v.dtype in (torch.int8, torch.uint8) or k.endswith(_KEEP_FP32) or k.startswith("adaln.")
+            keep = v.dtype in (torch.int8, torch.uint8) or k.endswith(KEEP_PRECISION) or k.startswith("adaln.")
             if v.is_floating_point() and not keep:
                 v = v.to(dtype)
             tensors[f"{part}.{k}"] = v.detach().cpu().contiguous()

@@ -238,3 +238,34 @@ def test_quantised_pipeline_runs_and_tracks_fp(pipe, tmp_path, mode, tol):
     q2 = load_checkpoint(qpath, "cpu", torch.float32)
     assert q2.quant == mode
     assert torch.equal(q("hi", **KW).video, q2("hi", **KW).video)
+
+
+@pytest.mark.skipif(__import__("shutil").which("g++") is None, reason="torch.compile on CPU needs a C++ compiler")
+def test_compile_keeps_keys_and_matches_eager(pipe):
+    import copy
+
+    p = copy.deepcopy(pipe)
+    ref = p("hi", **KW)
+    keys = sorted(p.model.state_dict())
+    p.compile()
+    out = p("hi", **KW)
+    assert sorted(p.model.state_dict()) == keys
+    assert (out.video.int() - ref.video.int()).abs().max() <= 1
+    assert (out.audio - ref.audio).abs().max() < 1e-4
+
+
+def test_single_frame_generation_is_text_to_image(pipe):
+    g = pipe("x", generate="video", width=64, height=96, num_frames=1, steps=2, seed=0)
+    assert g.video.shape == (1, 96, 64, 3)
+
+
+def test_requested_size_and_frames_are_snapped(pipe):
+    g = pipe("x", generate="video", width=70, height=50, num_frames=10, steps=1, seed=0)
+    assert g.video.shape == (9, 64, 64, 3)  # 70->64, 50->64, 10 -> 1+4k = 9
+
+
+def test_conditioning_past_the_end_is_an_error_not_silently_dropped(pipe):
+    with pytest.raises(ValueError, match="past the end"):
+        pipe("x", context=OmniContext(video=[VideoCond(_clip(pipe, 1, 0.0), frame_index=40)]), **KW)
+    with pytest.raises(ValueError, match="past the end"):
+        pipe("x", context=OmniContext(audio=[AudioCond(torch.zeros(8000), start_sec=9.0)]), **KW)

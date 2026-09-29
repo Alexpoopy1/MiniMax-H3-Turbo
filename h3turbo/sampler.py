@@ -15,10 +15,15 @@ def shift_sigmas(sigmas: torch.Tensor, shift: float) -> torch.Tensor:
 
 
 def flow_sigmas(steps: int, shift: float = 3.0, start: float = 1.0) -> torch.Tensor:
-    """steps + 1 values from `start` down to exactly 0."""
+    """steps + 1 sigmas from exactly `start` (the noise level the sample really has) down
+    to exactly 0. For start < 1 (img2img-style refinement) the linear grid is laid out
+    before the shift is applied, so the shift is inverted to land on `start`."""
     if steps < 1:
         raise ValueError("steps must be >= 1")
-    return shift_sigmas(torch.linspace(start, 0.0, steps + 1), shift)
+    if not 0.0 < start <= 1.0:
+        raise ValueError("start must be in (0, 1]")
+    u0 = start / (shift - (shift - 1) * start)
+    return shift_sigmas(torch.linspace(u0, 0.0, steps + 1), shift)
 
 
 def euler_step(x: torch.Tensor, v: torch.Tensor, sigma: float, sigma_next: float) -> torch.Tensor:

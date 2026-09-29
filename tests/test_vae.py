@@ -88,3 +88,25 @@ def test_tokenizer_utf8_roundtrip_length():
     tok = ByteTokenizer(16)
     ids = tok.encode("héllo ✓✓✓✓✓✓✓✓✓✓")
     assert ids[0] == 257 and ids[-1] == 258 and len(ids) <= 16
+
+
+def test_streaming_decode_handles_image_and_ragged_chunks():
+    v = _vae()
+    z1 = torch.randn(1, 24, 1, 4, 4)
+    assert torch.equal(v.decode_tiled(z1, tile=99, overlap=0, chunk=2), v.decode(z1))  # 1-frame video
+    z = torch.randn(1, 24, 7, 4, 4)
+    full = v.decode(z)
+    for chunk in (3, 5, 6):  # 7 latents never divide evenly
+        assert (v.decode_tiled(z, tile=99, overlap=0, chunk=chunk) - full).abs().max() < 1e-4
+
+
+def test_stft_loss_is_zero_for_identical_and_grows_with_mismatch():
+    from h3turbo.training import stft_loss
+
+    g = torch.Generator().manual_seed(0)
+    t = torch.arange(16000) / 32000
+    x = torch.sin(2 * torch.pi * 440 * t)[None].repeat(2, 1)
+    assert stft_loss(x, x).item() < 1e-6
+    shifted = torch.sin(2 * torch.pi * 660 * t)[None].repeat(2, 1)
+    assert stft_loss(x, shifted).item() > 0.5
+    assert stft_loss(x, torch.zeros_like(x)).item() > stft_loss(x, x * 0.9).item()
