@@ -375,3 +375,17 @@ def test_cuda_streaming_matches_file_and_orders_kernels(store, resident, kw):
         if resident < LAYERS:
             kinds = p.stats()["host_kinds"]
             assert sum(kinds.values()) == LAYERS - resident
+
+
+@pytest.mark.parametrize("build_in_inference_mode", [True, False])
+def test_provider_works_when_built_inside_inference_mode(store, build_in_inference_mode):
+    """ComfyUI builds providers under torch.inference_mode(): the slot buffers are then inference tensors, and the copy thread
+    (its own thread, so outside the mode unless it enters it) must still be able to copy into them."""
+    with torch.inference_mode(build_in_inference_mode):
+        p = StreamingProvider(store, "cpu", resident=1, ring=2, prefetch=1, pin=False, wait_timeout=20)
+    try:
+        for _ in range(3):
+            forward(p, store)
+        assert no_slot_held(p)
+    finally:
+        p.close()

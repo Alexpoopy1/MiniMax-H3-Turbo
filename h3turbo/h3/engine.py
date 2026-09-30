@@ -27,31 +27,42 @@ def h3_sigmas(steps: int, shift: float) -> torch.Tensor:
 
 
 class H3Engine:
-    def __init__(self, store: H3TFile, provider: StreamingProvider, model: H3Model):
-        self.store, self.provider, self.model, self.cfg = store, provider, model, store.cfg
+    def __init__(self, store: H3TFile, provider: StreamingProvider, model: H3Model, owns_store: bool = True):
+        self.store, self.provider, self.model, self.cfg, self._owns_store = store, provider, model, store.cfg, owns_store
 
     @classmethod
-    def from_h3t(cls, path: str, device: Optional[str] = None, *, resident="auto", precision: str = "a8", backend: str = "auto",
-                 reserve_gb: float = 1.5, prefetch: int = 2, ring: int = 3, pin="auto", mlp_chunk: Optional[int] = None,
-                 attn_chunk: Optional[int] = None, refiner_on_gpu: bool = False, **model_kw) -> "H3Engine":
-        """resident="auto" keeps as many blocks on the GPU as fit after `reserve_gb` for activations (all of them on a
+    def from_h3t(cls, path: str, device: Optional[str] = None, **kw) -> "H3Engine":
+        """Open `path` and build an engine that owns the file (see `from_store` for the options).
+        resident="auto" keeps as many blocks on the GPU as fit after `reserve_gb` for activations (all of them on a
         big card, ~13 of 50 on a 6 GB one); the rest stream from RAM behind compute. precision "a16" skips activation
         quantisation (slower, slightly closer to the un-quantised function)."""
-        dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
         store = H3TFile(path)
+        try:
+            return cls.from_store(store, device, owns_store=True, **kw)
+        except BaseException:
+            store.close()
+            raise
+
+    @classmethod
+    def from_store(cls, store: H3TFile, device: Optional[str] = None, *, owns_store: bool = False, resident="auto",
+                   precision: str = "a8", backend: str = "auto", reserve_gb: float = 1.5, free_vram_bytes: Optional[int] = None,
+                   prefetch: int = 2, ring: int = 3, pin="auto", mlp_chunk: Optional[int] = None,
+                   attn_chunk: Optional[int] = None, refiner_on_gpu: bool = False, **model_kw) -> "H3Engine":
+        """Build provider + model over an open store. `free_vram_bytes` overrides the measured free VRAM (a host such as ComfyUI
+        hands the model a budget); `reserve_gb` is then still subtracted for activations."""
+        dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
         provider = None
         try:
             glob = store.load_globals(dev, refiner_device=dev if refiner_on_gpu else "cpu")
             provider = StreamingProvider(store, dev, resident=resident, prefetch=prefetch, pin=pin, ring=ring,
-                                         reserve_bytes=int(reserve_gb * _GIB))
+                                         reserve_bytes=int(reserve_gb * _GIB), free_vram_bytes=free_vram_bytes)
             model = H3Model(store.cfg, glob, provider, device=dev, backend=backend, precision=precision,
                             mlp_chunk=mlp_chunk, attn_chunk=attn_chunk, **model_kw)
         except BaseException:
             if provider is not None:
                 provider.close()
-            store.close()
             raise
-        return cls(store, provider, model)
+        return cls(store, provider, model, owns_store)
 
     # ---------------------------------------------------------------- inference
     def encode_text(self, text_states: torch.Tensor) -> torch.Tensor:
@@ -98,9 +109,21 @@ class H3Engine:
     def stats(self) -> Dict[str, object]:
         return self.provider.stats()
 
+    def gpu_bytes(self) -> int:
+        """Device memory held by weights: resident blocks + streaming slots + the small resident globals."""
+        import dataclasses
+
+        total = int(self.provider.stats().get("gpu_bytes", 0))
+        for f in dataclasses.fields(self.model.glob):
+            v = getattr(self.model.glob, f.name)
+            if isinstance(v, torch.Tensor) and v.device.type == "cuda":
+                total += v.numel() * v.element_size()
+        return total
+
     def close(self) -> None:
         self.provider.close()
-        self.store.close()
+        if self._owns_store:
+            self.store.close()
 
     def __enter__(self) -> "H3Engine":
         return self

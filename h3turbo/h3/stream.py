@@ -292,6 +292,12 @@ class StreamingProvider:
         return None
 
     def _run(self) -> None:
+        # inference mode is thread-local: a host that builds the provider under torch.inference_mode() (ComfyUI runs every
+        # node that way) owns inference-tensor slot buffers, and copy_ into those from a thread outside the mode is an error
+        with torch.inference_mode():
+            self._run_loop()
+
+    def _run_loop(self) -> None:
         if self._cuda:
             torch.cuda.set_device(self.device)
         try:

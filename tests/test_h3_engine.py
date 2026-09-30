@@ -127,3 +127,18 @@ def test_audio_scale_zero_is_not_treated_as_one(engine):
 def test_provider_state_dump_and_backend_report(engine):
     assert engine.provider._dump().startswith("slots ")  # f-string nested quotes here were a SyntaxError before Python 3.12
     assert engine.linear_backend() in ("ck", "torch")
+
+
+def test_patch_projection_is_one_gemm_for_a_15k_token_clip(engine, monkeypatch):
+    """Splitting the fp32 projection changed cuBLAS tiling, hence the last bit versus ComfyUI, and sampling amplified it (video PSNR 29 dB)."""
+    import torch.nn.functional as F
+
+    import h3turbo.h3.model as mod
+
+    calls = []
+    real = F.linear
+    monkeypatch.setattr(mod.F, "linear", lambda x, w, b=None: (calls.append(x.shape[0]), real(x, w, b))[1])
+    m = engine.model
+    rows = torch.randn(15000, CFG.video_patch_dim)
+    out = m._project(rows, m.vpw, m.vpb)
+    assert calls == [15000] and out.shape == (15000, CFG.hidden)

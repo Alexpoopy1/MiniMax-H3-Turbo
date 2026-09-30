@@ -125,12 +125,34 @@ with H3Engine.from_h3t("model.h3t") as eng:                  # keeps as many blo
 | 1,768 | 512x320, 33 frames | 3.39 s / forward | 2.55 s | bit-identical (max abs 0) at 6 sigmas |
 | 4,448 | 512x320, 97 frames | 9.29 s | 8.60 s | bit-identical |
 | 8,512 | 768x448, 4 s | not run | 25.5 s (peak VRAM 4.78 GiB) | not compared |
+| 14,972 | 832x480, 5 s | 61.8 s (standalone native forward) | 44-46 s | bit-identical |
 
 Each forward is one sampling step; the checkpoint is an 8-step turbo model, so a clip costs about 8x the figure. 13 of 50 blocks stay on the GPU, 37 are copied in behind compute with no stalls (`stats()['waits'] == 0`); the gain over native is the hidden copy time and it shrinks as sequences get longer and compute dominates. The linears run at 25-39 TOPS through comfy_kitchen's CUDA kernels; without comfy_kitchen a portable torch path is used (about 2x slower per block, measured by the qlinear check script).
 
 **Quality.** The engine is the same network as ComfyUI's, so it has the checkpoint's quality, no more. Against the sibling int8 file, the 4-bit weights differ by 7.3% relative L2 per layer (checked on blocks 0, 25, 49); int8 activation quantisation adds about 1% per layer against an fp64 reference, and skipping it (`precision="a16"`) only moves the error against the int8 function from about 7.4% to 7.3%. Weight precision, not activations, is what limits fidelity. If you have the VRAM/RAM, the int8 sibling is the higher-quality file; this engine does not load it.
 
 **Not done / not verified.** Text encoding (Qwen3-VL) and the VAEs are inputs and outputs of the engine, not part of it, and no clip has been generated through it, so there is no end-to-end visual quality check. Only the RTX 3050 was available: the "everything resident on a big card" plan is arithmetic, not a run. Parity holds only for identical inputs: with random inputs the network is chaotic (a 1-ulp change in sigma moved the video output by 6-12% in this test), so compare same-sigma outputs, and note ComfyUI computes `timestep / 1000` on the GPU (1 ulp off the exact value). No fp8/fp4 path, no int8 attention (comfy_kitchen has one; it halves attention time at about 1.6% attention error on Gaussian data, unvalidated on real content), no multi-GPU.
+
+### In ComfyUI: H3-Turbo Fast UNET Loader
+
+A node (`H3TurboFastUNetLoader`, category `H3-Turbo`) that replaces the core **UNETLoader** in an H3 workflow. It returns an ordinary MODEL, so your text encoder, `MiniMaxH3ImageToVideo`, `BasicScheduler`, `SamplerCustomAdvanced` and VAE nodes stay as they are; only the DiT forward runs through this engine.
+
+1. Convert once: `h3turbo h3-convert <...>_w4a8_convrot.safetensors <ComfyUI>/models/h3turbo/<name>.h3t`
+2. Install the node: clone this repo into `ComfyUI/custom_nodes/`, or link it (`mklink /J <ComfyUI>\custom_nodes\MiniMax-H3-Turbo <this repo>`) and restart ComfyUI.
+3. In the workflow, delete UNETLoader, add **H3-Turbo Fast UNET Loader (h3t)**, pick the `.h3t`, and connect its MODEL where UNETLoader's went. Options: `precision` (a8 = native, a16 = unquantised activations, about 2x slower), `resident_blocks` (0 = whatever VRAM ComfyUI offers), `mlp_chunk` (0 = automatic).
+
+It cooperates with ComfyUI's memory manager: ComfyUI gives the model a VRAM budget, the engine fits its resident blocks and a 3-slot streaming ring inside it, and it hands all of it back (including the page-locked host copies) when the VAE or text encoder needs the card. Run-time LoRAs cannot be applied to a streamed 4-bit model, so adding one raises an error instead of being ignored; merge it into the checkpoint. Block-level model patches are not honoured.
+
+**Measured** through a real ComfyUI server with your workflow (text to video, seed 42, `res_multistep`, 8 steps, RTX 3050 6 GB), `scripts/comfy_h3_e2e.py`:
+
+| clip | | sampler | per step | wall total | decoded video and audio |
+|---|---|---|---|---|---|
+| 512x320, 22 frames | UNETLoader | 117-128 s | 2.0-2.7 s | 269-291 s | reference |
+| | Fast loader | 88 s | 1.95 s | 196 s | identical, max diff 0 |
+| 832x480, 124 frames (about 15k tokens) | UNETLoader | 406 s | 45.7 s | 614 s | reference |
+| | Fast loader | 411 s | 44.8 s | 589 s | identical, max diff 0 |
+
+So the loader pays off on short clips, where hiding weight copies matters, and is a wash at your 832x480, 5 s setting, where the 3050's compute is the limit (about half of each step is attention, the rest int8 GEMMs). Wall totals include text-encoder and VAE loading from a slow disk and vary by tens of seconds between runs; the sampler column is the reliable one. Single runs, not averages (the two native small runs agreed with each other bit for bit). Fixing an earlier mismatch mattered here: at 15k tokens the patch-embedding GEMM must not be split into row chunks, or the last bit differs from ComfyUI and eight sampling steps amplify it into a visibly different video (PSNR 29 dB); it is now one GEMM and the videos are identical.
 
 ## ComfyUI
 

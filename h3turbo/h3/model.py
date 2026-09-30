@@ -29,7 +29,11 @@ from .types import BlockProvider, BlockWeights, GlobalWeights, W4A8Weight, Weigh
 
 _VIDEO_ROWS = ("cond", "ref_img", "video")
 _COND_VIDEO, _COND_AUDIO = ("cond", "ref_img"), ("cond_audio", "ref_audio")
-_ROW_CHUNK = 4096  # rows per modulation gather; also the per-call cap of the fp32 patch projection (2x)
+_ROW_CHUNK = 4096  # rows per modulation gather
+# The fp32 patch projection and the output heads run as ONE GEMM up to this many rows: cuBLAS picks its tiling from the row count,
+# so splitting a 14k-row projection (a 832x480, 5 s clip) changed the last bit against ComfyUI and that amplified over 8 steps
+# (measured: relL2 4e-5 per forward, video PSNR 29 dB after sampling). 65536 rows of fp32 hidden is ~1.4 GB, far above any clip a 6 GB card runs.
+_PROJ_ROWS = 1 << 16
 
 
 def _qlinear():
@@ -101,7 +105,7 @@ def _gate_(x: torch.Tensor, gate: torch.Tensor, other: torch.Tensor, segments) -
 
 class H3Model:
     """H3 DiT over a BlockProvider. backend/precision: qlinear backend and "a8" (native W4A8) or "a16" (activations unquantised).
-    mlp_chunk/attn_chunk/rope_chunk: token/query/row chunks bounding peak memory (mlp_chunk also bounds the final layer), exact
+    mlp_chunk/attn_chunk/rope_chunk: token/query/row chunks bounding peak memory, exact
     up to GEMM tiling. rope_impl (auto|ck|torch|eager), rope_dtype, attn_backend (auto = ComfyUI's SDPA order | default),
     fp32_islands: see the module docstring."""
 
@@ -274,8 +278,8 @@ class H3Model:
         return torch.cat(rows, dim=0) if rows else None
 
     def _project(self, rows: torch.Tensor, w: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        """fp32 patch projection into the compute dtype, at most 2*_ROW_CHUNK rows per GEMM (bounds the fp32 temporary)."""
-        step, out = 2 * _ROW_CHUNK, torch.empty(rows.shape[0], w.shape[0], dtype=self.dtype, device=rows.device)
+        """fp32 patch projection into the compute dtype, one GEMM up to _PROJ_ROWS rows (see there)."""
+        step, out = _PROJ_ROWS, torch.empty(rows.shape[0], w.shape[0], dtype=self.dtype, device=rows.device)
         for a in range(0, rows.shape[0], step):
             out[a:a + step] = F.linear(rows[a:a + step], w, b)
         return out
@@ -321,12 +325,12 @@ class H3Model:
         cfg = self.cfg
         shift, scale = self._adaln(t_emb, self.final_adaln_w, self.final_adaln_b, 2, 1)
 
-        def head(seg, w, b):  # token-wise, so row chunks are exact and bound the fp32 [n, hidden] temporaries
+        def head(seg, w, b):  # token-wise; one GEMM up to _PROJ_ROWS rows like the reference, chunked only beyond that
             a0, b0, row = seg
             row = row.to(self.device) if isinstance(row, torch.Tensor) else row
             outs = []
-            for a in range(a0, b0, self.mlp_chunk or 2 * _ROW_CHUNK):
-                e = min(b0, a + (self.mlp_chunk or 2 * _ROW_CHUNK))
+            for a in range(a0, b0, _PROJ_ROWS):
+                e = min(b0, a + _PROJ_ROWS)
                 r = row[a - a0:e - a0] if isinstance(row, torch.Tensor) else row
                 outs.append(F.linear(_rms(h[a:e], self.final_norm, cfg.final_norm_eps) * (1.0 + scale[r]) + shift[r], w, b))
             return torch.cat(outs)
@@ -343,7 +347,8 @@ class H3Model:
     def forward(self, x: Sequence[torch.Tensor], sigma, text_states: Optional[torch.Tensor], *,
                 payload: Optional[Mapping[str, Any]] = None, denoise_mask: Optional[torch.Tensor] = None,
                 audio_denoise_mask: Optional[torch.Tensor] = None, sample_sigmas=None,
-                refined_text: Optional[torch.Tensor] = None) -> List[torch.Tensor]:
+                refined_text: Optional[torch.Tensor] = None,
+                shifts: Optional[Tuple[float, float]] = None) -> List[torch.Tensor]:
         """One velocity prediction. x = [video [1,C,T,H,W], audio [1,Ca,2,Ta]] (each stream's own latent), sigma = the
         video sigma (float or fp32 scalar tensor). Returns [-video_v, -audio_v] like the reference, times the denoise masks.
         Per-step callers should pass `refined_text=encode_text(...)` computed once: with the refiner off the GPU, recomputing it
@@ -364,7 +369,7 @@ class H3Model:
         if not math.isfinite(float(sigma_v)):
             raise ValueError("sigma must be finite")
         sigma_v = sigma_v.clamp(min=1e-6)  # same clamp as the reference
-        shifts = (cfg.sigma_shift_video, cfg.sigma_shift_audio)
+        shifts = (float(shifts[0]), float(shifts[1])) if shifts is not None else (cfg.sigma_shift_video, cfg.sigma_shift_audio)
 
         # the sampler may carry audio scaled onto the video schedule: undo it here, redo it on the velocity
         scale = float(1.0 if payload.get("audio_scale") is None else payload["audio_scale"])
