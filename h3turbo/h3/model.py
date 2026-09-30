@@ -259,9 +259,10 @@ class H3Model:
         if text_states.shape[-1] != cfg.text_dim or len(self.glob.refiner) != cfg.refiner_layers or self.refiner_norm is None:
             raise ValueError(f"text_states width {text_states.shape[-1]} is neither hidden nor text_dim {cfg.text_dim}, or the refiner is missing")
         x = F.linear(text_states[0].to(self.device, self.dtype), self.cond_w, self.cond_b)
-        for blk in self.glob.refiner:
+        for blk in self.glob.refiner:  # the refiner may live off-device: bring over one block at a time
             on_device = BlockWeights(**{k: None if v is None else v.to(self.device) for k, v in vars(blk).items()})
-            x = self._refiner_block(x, on_device)  # the refiner may live off-device: one block at a time
+            x = self._refiner_block(x, on_device)
+            del on_device  # free it before the next block is copied, or both (1.47 GB) sit on the card at once
         return _rms(x, self.refiner_norm, cfg.final_norm_eps).unsqueeze(0)
 
     # ------------------------------------------------------------------ forward

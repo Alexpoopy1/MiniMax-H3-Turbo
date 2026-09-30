@@ -69,14 +69,15 @@ class _Block(torch.nn.Module):
 class H3TurboDiT(torch.nn.Module):
     """Stands in for comfy.ldm.minimax.model.MiniMaxH3Model: same call signature, engine inside, no weights of its own."""
 
-    def __init__(self, path: str, precision: str, resident_blocks: int, mlp_chunk: int, attention: str = "exact"):
+    def __init__(self, path: str, precision: str, resident_blocks: int, mlp_chunk: int, attention: str = "exact",
+                 dtype: torch.dtype = torch.bfloat16):
         super().__init__()
         self.path, self.precision, self.resident_blocks, self.mlp_chunk = path, precision, resident_blocks, mlp_chunk
         self.attn_impl = "int8" if attention == "int8_fast" else "sdpa"
         self.store = H3TFile(path)
         cfg = self.store.cfg
         self.cfg = cfg
-        self.dtype = torch.bfloat16
+        self.dtype = dtype  # bf16 on Ampere+; fp32 on GPUs without bf16 (a T4, e.g. Google Colab's free tier), as ComfyUI does for H3
         self.patch_size = tuple(cfg.patch)
         self.hidden_size, self.latents_dim, self.audio_latents_dim = cfg.hidden, cfg.video_channels, cfg.audio_channels
         self.sigma_shift_video, self.sigma_shift_audio = cfg.sigma_shift_video, cfg.sigma_shift_audio
@@ -102,7 +103,8 @@ class H3TurboDiT(torch.nn.Module):
             budget = free if budget is None else int(min(max(budget, _MIN_BUDGET), free))
             e = H3Engine.from_store(self.store, str(dev), owns_store=False, precision=self.precision,
                                     resident="auto" if not self.resident_blocks else self.resident_blocks,
-                                    reserve_gb=0.25, free_vram_bytes=budget, attn_impl=self.attn_impl)
+                                    reserve_gb=0.25, free_vram_bytes=budget, attn_impl=self.attn_impl,
+                                    dtype=self.dtype)
             self.engine = e
             st = e.stats()
             LOG.info("H3-Turbo engine loaded: %d/%d blocks resident, %d streamed, %.2f GiB on GPU (budget %.2f GiB, %s host copies)",
@@ -239,11 +241,22 @@ def _unet_config(cfg) -> dict:
 
 def build_model_patcher(path: str, precision: str = "a8", resident_blocks: int = 0, mlp_chunk: int = 0,
                         attention: str = "exact") -> H3TurboPatcher:
-    dit = H3TurboDiT(path, precision, resident_blocks, mlp_chunk, attention)
     load_device, offload_device = mm.get_torch_device(), mm.unet_offload_device()
+    probe_cfg = comfy.supported_models.MiniMaxH3({"image_model": "minimax_h3"})
+    # the same choice ComfyUI makes for H3 (bf16 or fp32 only): bf16 where the GPU has it, fp32 on e.g. a T4; honours --fp32-unet
+    dtype = mm.unet_dtype(load_device, supported_dtypes=list(probe_cfg.supported_inference_dtypes))
+    if dtype not in (torch.bfloat16, torch.float32):
+        dtype = torch.float32
+    if (dtype == torch.bfloat16 and load_device.type == "cuda" and torch.cuda.get_device_capability(load_device) < (8, 0)
+            and not mm.args.bf16_unet):
+        # pre-Ampere (T4): ComfyUI picks emulated bf16 to save memory, but here the weights stay 4-bit either way and only the
+        # activations change, so native fp32 math is both faster and more exact
+        dtype = torch.float32
+    dit = H3TurboDiT(path, precision, resident_blocks, mlp_chunk, attention, dtype)
     model_config = comfy.supported_models.MiniMaxH3(_unet_config(dit.cfg))
-    manual_cast = mm.unet_manual_cast(torch.bfloat16, load_device, model_config.supported_inference_dtypes)
-    model_config.set_inference_dtype(torch.bfloat16, manual_cast, device=load_device)
+    manual_cast = mm.unet_manual_cast(dtype, load_device, model_config.supported_inference_dtypes)
+    model_config.set_inference_dtype(dtype, manual_cast, device=load_device)
+    LOG.info("H3-Turbo Fast UNET Loader: compute dtype %s", dtype)
     model = H3TurboBaseModel(model_config, dit, device=offload_device)
     return H3TurboPatcher(model, load_device=load_device, offload_device=offload_device)
 

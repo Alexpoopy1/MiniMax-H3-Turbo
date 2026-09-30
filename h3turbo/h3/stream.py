@@ -55,6 +55,9 @@ def free_ram_bytes() -> int:
     raise RuntimeError("cannot determine free RAM (install psutil, or pass pin_blocks explicitly)")
 
 
+_CUDA_MARGIN = 512 << 20
+
+
 def plan_residency(store: H3TFile, free_vram_bytes: int, reserve_bytes: int = 0, ring: int = 3) -> int:
     """How many leading blocks to keep on the device: the most that still leaves room for the streaming ring
     (`min(ring, streamed)` slots) inside `free_vram_bytes - reserve_bytes`. All blocks resident needs no ring.
@@ -174,7 +177,9 @@ class StreamingProvider:
         auto = resident == "auto"
         if auto:
             free = free_vram if free_vram is not None else (torch.cuda.mem_get_info(self.device)[0] if self._cuda else free_ram_bytes() // 2)
-            resident = plan_residency(st, free, reserve, ring)
+            # CUDA: keep a margin beyond `reserve` for memory torch does not see (cuDNN/cuBLAS workspaces, kernel images). Filling
+            # a 6 GB Windows card to the last byte made the driver page VRAM to RAM: 4.85 s per forward instead of 2.99 s (measured)
+            resident = plan_residency(st, free, reserve + (_CUDA_MARGIN if self._cuda else 0), ring)
         for b in range(min(int(resident), n)):
             try:
                 buf = self._alloc()

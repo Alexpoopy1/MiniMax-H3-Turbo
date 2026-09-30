@@ -316,11 +316,20 @@ def _ck():
             import comfy_kitchen as ck
             from comfy_kitchen.tensor.w4a8_int8 import w4a8_int8_linear
 
-            cuda = bool(ck.list_backends().get("cuda", {}).get("available"))
-            _STATE["ck"] = (w4a8_int8_linear if cuda else None, None if cuda else "comfy_kitchen has no CUDA backend", getattr(ck, "__version__", None))
+            # "available" is not enough: ComfyUI disables kitchen's CUDA backend under torch builds older than CUDA 13 (e.g. Google
+            # Colab's), and kitchen then silently dispatches its eager W4A8 code, which is slower than the torch path here
+            b = ck.list_backends().get("cuda", {})
+            cuda = bool(b.get("available")) and not b.get("disabled") and "w4a8_int8_linear" in (b.get("capabilities") or ())
+            why = None if cuda else ("comfy_kitchen's CUDA backend is disabled" if b.get("disabled") else "comfy_kitchen has no CUDA W4A8 kernel")
+            _STATE["ck"] = (w4a8_int8_linear if cuda else None, why, getattr(ck, "__version__", None))
         except Exception as e:  # ImportError, or a broken compiled extension
             _STATE["ck"] = (None, f"{type(e).__name__}: {e}", None)
     return _STATE["ck"]
+
+
+def _ck_arch_ok(dev: torch.device) -> bool:
+    """kitchen's W4A8 layout needs sm80+ (Ampere); on a T4 (sm75) it would fall back to eager code."""
+    return torch.cuda.get_device_capability(dev) >= (8, 0)
 
 
 def available_backends() -> Dict[str, Dict[str, Any]]:
@@ -344,11 +353,11 @@ def resolve_backend(x: torch.Tensor, w: Weight, backend: str = "auto", precision
     if precision == "a16" or backend == "torch":
         return "torch"  # kitchen has no activation-unquantised mode
     fn, why, _ = _ck()
-    usable = fn is not None and x.is_cuda and w.q.is_cuda
+    usable = fn is not None and x.is_cuda and w.q.is_cuda and x.dtype in (torch.bfloat16, torch.float16) and _ck_arch_ok(x.device)
     if backend == "ck" and not usable:
-        raise RuntimeError(f"backend 'ck' unavailable: {why or ('needs CUDA tensors' if not x.is_cuda else 'weights not on CUDA')}")
+        raise RuntimeError(f"backend 'ck' unavailable: {why or ('needs CUDA tensors' if not x.is_cuda else 'weights not on CUDA' if not w.q.is_cuda else 'needs bf16/fp16 activations on an sm80+ GPU')}")
     if not usable and backend == "auto" and x.is_cuda and w.q.is_cuda:
-        _warn_no_ck(why)
+        _warn_no_ck(why or "activations are not bf16/fp16, or the GPU is older than sm80")
     return "ck" if usable else "torch"
 
 

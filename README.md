@@ -157,6 +157,19 @@ So the loader pays off on short clips, where hiding weight copies matters, and i
 
 **`int8_fast` attention** halves the attention kernel time (comfy_kitchen's INT8 SDPA: int8 Q/K/V/P with a Hadamard rotation of Q and K) and cut the sampler 22% at 832x480x124, but it is not the reference numerics, so the result is a different sample rather than the same video: 26.1 dB PSNR from the native video, against 28.9 dB for a run that differed from native only in the last bit (this network amplifies tiny differences over 8 steps, so PSNR between two valid samples is not a quality score). On the one clip I compared, three frames side by side looked equally sharp and coherent. The audio deviates about 4x more than in the last-bit case (mean absolute difference 0.030 vs 0.008) and I did not listen to it. It also raised peak GPU memory to 5.8 GB in `nvidia-smi` (5.4 GB exact). One prompt and seed only: treat it as an option to try, not a proven equivalent. Fixing an earlier mismatch mattered here: at 15k tokens the patch-embedding GEMM must not be split into row chunks, or the last bit differs from ComfyUI and eight sampling steps amplify it into a visibly different video (PSNR 29 dB); it is now one GEMM and the videos are identical.
 
+### On Google Colab
+
+[`colab/H3_Turbo_Colab.ipynb`](colab/H3_Turbo_Colab.ipynb) installs ComfyUI v0.37.4, ComfyUI-GGUF and this repo, downloads the text encoder
+(`realrebelai/MiniMax-H3_GGUFs`, the same Q2_K file as the RTX 3050 workflow) and the VAEs (`Comfy-Org/MiniMax-H3`), fetches your model
+from a private Hugging Face repo or Google Drive, and generates headless (no web UI), showing the video inline. Helpers:
+[`colab/h3_colab.py`](colab/h3_colab.py) (start ComfyUI, build the API graph, generate), regenerate the notebook with `python colab/make_notebook.py`.
+
+* Colab's PyTorch is built for CUDA 12, so ComfyUI switches comfy_kitchen's CUDA kernels off. The engine then uses its portable int8
+  path. On sm80+ GPUs with a CUDA 13 driver, the notebook can install the CUDA 13 PyTorch the RTX 3050 setup was verified with instead.
+* T4 (free tier): no bf16, so the node computes in fp32 there (the 4-bit weights are unchanged). About 12.7 GB of RAM is tight.
+* **Not run on Colab yet.** The graph was tested against ComfyUI 0.37.4 on Windows, and the fp32 path on the RTX 3050; the Linux/Colab
+  install steps are untested.
+
 ## ComfyUI
 
 Clone the repo into `ComfyUI/custom_nodes/` (no pip install needed) and put checkpoints in `ComfyUI/models/h3turbo/`.
