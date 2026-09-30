@@ -69,9 +69,10 @@ class _Block(torch.nn.Module):
 class H3TurboDiT(torch.nn.Module):
     """Stands in for comfy.ldm.minimax.model.MiniMaxH3Model: same call signature, engine inside, no weights of its own."""
 
-    def __init__(self, path: str, precision: str, resident_blocks: int, mlp_chunk: int):
+    def __init__(self, path: str, precision: str, resident_blocks: int, mlp_chunk: int, attention: str = "exact"):
         super().__init__()
         self.path, self.precision, self.resident_blocks, self.mlp_chunk = path, precision, resident_blocks, mlp_chunk
+        self.attn_impl = "int8" if attention == "int8_fast" else "sdpa"
         self.store = H3TFile(path)
         cfg = self.store.cfg
         self.cfg = cfg
@@ -101,7 +102,7 @@ class H3TurboDiT(torch.nn.Module):
             budget = free if budget is None else int(min(max(budget, _MIN_BUDGET), free))
             e = H3Engine.from_store(self.store, str(dev), owns_store=False, precision=self.precision,
                                     resident="auto" if not self.resident_blocks else self.resident_blocks,
-                                    reserve_gb=0.25, free_vram_bytes=budget)
+                                    reserve_gb=0.25, free_vram_bytes=budget, attn_impl=self.attn_impl)
             self.engine = e
             st = e.stats()
             LOG.info("H3-Turbo engine loaded: %d/%d blocks resident, %d streamed, %.2f GiB on GPU (budget %.2f GiB, %s host copies)",
@@ -236,8 +237,9 @@ def _unet_config(cfg) -> dict:
     }
 
 
-def build_model_patcher(path: str, precision: str = "a8", resident_blocks: int = 0, mlp_chunk: int = 0) -> H3TurboPatcher:
-    dit = H3TurboDiT(path, precision, resident_blocks, mlp_chunk)
+def build_model_patcher(path: str, precision: str = "a8", resident_blocks: int = 0, mlp_chunk: int = 0,
+                        attention: str = "exact") -> H3TurboPatcher:
+    dit = H3TurboDiT(path, precision, resident_blocks, mlp_chunk, attention)
     load_device, offload_device = mm.get_torch_device(), mm.unet_offload_device()
     model_config = comfy.supported_models.MiniMaxH3(_unet_config(dit.cfg))
     manual_cast = mm.unet_manual_cast(torch.bfloat16, load_device, model_config.supported_inference_dtypes)
@@ -260,11 +262,12 @@ class H3TurboFastUNetLoader:
             "precision": (["a8", "a16"], {"default": "a8", "tooltip": "a8 = the checkpoint's native int8 activations (fast). a16 = unquantised activations: about 2x slower, closer to the un-quantised function by a small margin."}),
             "resident_blocks": ("INT", {"default": 0, "min": 0, "max": 200, "tooltip": "Blocks kept on the GPU. 0 = as many as ComfyUI's VRAM budget allows."}),
             "mlp_chunk": ("INT", {"default": 0, "min": 0, "max": 65536, "tooltip": "Rows per MLP pass. 0 = automatic (chunks only when a long clip would not fit)."}),
+            "attention": (["exact", "int8_fast"], {"default": "exact", "tooltip": "exact = the reference SDPA, output identical to UNETLoader. int8_fast = comfy_kitchen INT8 attention: about a quarter faster per step on long clips, but NOT bit-identical (a different, equally plausible sample)."}),
         }}
 
-    def load(self, h3t_name, precision, resident_blocks, mlp_chunk):
+    def load(self, h3t_name, precision, resident_blocks, mlp_chunk, attention="exact"):
         path = folder_paths.get_full_path_or_raise(FOLDER, h3t_name)
-        return (build_model_patcher(path, precision, resident_blocks, mlp_chunk),)
+        return (build_model_patcher(path, precision, resident_blocks, mlp_chunk, attention),)
 
 
 NODE_CLASS_MAPPINGS = {"H3TurboFastUNetLoader": H3TurboFastUNetLoader}

@@ -178,7 +178,7 @@ def workflow_to_api(wf, variant, ov):
 
     if variant == "fast":
         (u,) = find("UNETLoader")
-        u.update(class_type="H3TurboFastUNetLoader", inputs={"h3t_name": H3T, "precision": "a8", "resident_blocks": 0, "mlp_chunk": 0})
+        u.update(class_type="H3TurboFastUNetLoader", inputs={"h3t_name": H3T, "precision": "a8", "resident_blocks": 0, "mlp_chunk": 0, "attention": ov.get("attention", "exact")})
     (i2v,) = find("MiniMaxH3ImageToVideo")
     for k in ("prompt", "width", "height", "length"):
         if ov.get(k) is not None:
@@ -225,7 +225,7 @@ def cmd_run(a):
         os.makedirs(os.path.join(out, d), exist_ok=True)
     with open(WORKFLOW, encoding="utf-8") as f:
         wf = json.load(f)
-    graph = workflow_to_api(wf, a.variant, dict(prompt=a.prompt, width=a.width, height=a.height, length=a.length, steps=a.steps, seed=a.seed))
+    graph = workflow_to_api(wf, a.variant, dict(prompt=a.prompt, width=a.width, height=a.height, length=a.length, steps=a.steps, seed=a.seed, attention=a.attention))
     with open(os.path.join(out, f"prompt_{a.variant}.json"), "w") as f:
         json.dump(graph, f, indent=1)
 
@@ -421,6 +421,7 @@ def main():
     r.add_argument("--steps", type=int, default=8)
     r.add_argument("--seed", type=int, default=42)
     r.add_argument("--prompt", default=DEFAULT_PROMPT)
+    r.add_argument("--attention", choices=["exact", "int8_fast"], default="exact", help="fast variant only")
     r.add_argument("--out-dir", required=True)
     r.add_argument("--timeout", type=int, default=7200, help="max seconds for the prompt itself")
     r.add_argument("--startup-timeout", type=int, default=900)

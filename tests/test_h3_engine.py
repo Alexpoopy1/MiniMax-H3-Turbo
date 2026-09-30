@@ -142,3 +142,15 @@ def test_patch_projection_is_one_gemm_for_a_15k_token_clip(engine, monkeypatch):
     rows = torch.randn(15000, CFG.video_patch_dim)
     out = m._project(rows, m.vpw, m.vpb)
     assert calls == [15000] and out.shape == (15000, CFG.hidden)
+
+
+def test_int8_attention_is_opt_in_and_validated(h3t):
+    """The default stays the reference SDPA; 'int8' needs comfy_kitchen's CUDA extension and says so instead of silently falling back."""
+    from h3turbo.h3.store import H3TFile
+
+    with H3Engine.from_h3t(h3t, "cpu", resident=1, pin=False) as eng:
+        assert eng.model.attn_impl == "sdpa" and eng.model._int8_attention is None
+    with pytest.raises(ValueError, match="attn_impl"):
+        H3Engine.from_h3t(h3t, "cpu", resident=1, pin=False, attn_impl="fp4")
+    with pytest.raises(RuntimeError, match="attn_impl='int8'"):  # CPU / no comfy_kitchen CUDA extension
+        H3Engine.from_h3t(h3t, "cpu", resident=1, pin=False, attn_impl="int8")

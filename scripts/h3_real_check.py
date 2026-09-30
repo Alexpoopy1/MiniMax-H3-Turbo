@@ -60,7 +60,7 @@ def engine(a):
     ref = torch.load(a.ref) if a.ref else None
     xv, xa, ctx = make_inputs(a.shape)
     with H3Engine.from_h3t(a.h3t, precision=a.precision, resident=a.resident if a.resident == "auto" else int(a.resident),
-                           reserve_gb=a.reserve_gb, mlp_chunk=a.mlp_chunk) as eng:
+                           reserve_gb=a.reserve_gb, mlp_chunk=a.mlp_chunk, attn_impl=a.attn) as eng:
         dev = eng.model.device
         refined = eng.encode_text(ctx.to(dev))
         times = []
@@ -94,6 +94,7 @@ if __name__ == "__main__":
     ap.add_argument("--resident", default="auto")
     ap.add_argument("--reserve-gb", type=float, default=1.5)
     ap.add_argument("--mlp-chunk", type=int, default=None)
+    ap.add_argument("--attn", default="sdpa", choices=["sdpa", "int8"], help="int8 = comfy_kitchen INT8 attention (faster, approximate)")
     ap.add_argument("--reps", type=int, default=3)
     ap.add_argument("--shape", type=lambda s: tuple(int(v) for v in s.split(",")), default=(9, 20, 32, 100))
     ap.add_argument("--sigmas", type=lambda s: tuple(float(v) for v in s.split(",")), default=SIGMAS)

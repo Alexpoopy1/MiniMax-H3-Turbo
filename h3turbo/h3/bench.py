@@ -31,12 +31,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--resident", default="auto", help="blocks kept on the GPU ('auto' or a count)")
     ap.add_argument("--reserve-gb", type=float, default=1.5, help="VRAM kept free for activations when resident='auto'")
     ap.add_argument("--mlp-chunk", type=int, default=None)
+    ap.add_argument("--attn", default="sdpa", choices=["sdpa", "int8"], help="int8 = comfy_kitchen INT8 attention (faster, approximate)")
     ap.add_argument("--device", default=None)
     a = ap.parse_args(argv)
     t, h, w, ta = latent_shape(a.width, a.height, a.seconds)
     g = torch.Generator("cpu").manual_seed(0)
     with H3Engine.from_h3t(a.h3t, a.device, resident=a.resident if a.resident == "auto" else int(a.resident), precision=a.precision,
-                           reserve_gb=a.reserve_gb, mlp_chunk=a.mlp_chunk) as eng:
+                           reserve_gb=a.reserve_gb, mlp_chunk=a.mlp_chunk, attn_impl=a.attn) as eng:
         dev, cfg = eng.model.device, eng.cfg
         xv = torch.randn(1, cfg.video_channels, t, h, w, generator=g).bfloat16().to(dev)
         xa = torch.randn(1, cfg.audio_channels, 2, ta, generator=g).bfloat16().to(dev)

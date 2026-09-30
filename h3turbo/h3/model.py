@@ -76,6 +76,18 @@ def _comfy_sdpa_priority():
     return sdpa_kernel, [SDPBackend.FLASH_ATTENTION, SDPBackend.CUDNN_ATTENTION, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]
 
 
+def _int8_attention_fn(device):
+    """comfy_kitchen's INT8 SDPA (int8 Q/K/V/P with a Hadamard rotation of Q and K): about 2x faster than cuDNN attention on
+    an RTX 3050 but NOT the reference numerics (measured 1.6% rel-L2 per call on Gaussian data), so it is opt-in."""
+    try:
+        from comfy_kitchen import sage_attention as sa
+    except Exception as e:
+        raise RuntimeError(f"attn_impl='int8' needs comfy_kitchen ({e!r})") from None
+    if not sa.is_available(torch.device(device)):
+        raise RuntimeError("attn_impl='int8' needs comfy_kitchen's CUDA extension on an sm75+ GPU")
+    return sa.int8_attention
+
+
 def _swiglu(z: torch.Tensor) -> torch.Tensor:
     gate, up = z.chunk(2, dim=-1)
     return F.silu(gate).mul_(up)
@@ -113,11 +125,13 @@ class H3Model:
                  dtype: torch.dtype = torch.bfloat16, backend: str = "auto", precision: str = "a8",
                  mlp_chunk: Optional[int] = None, attn_chunk: Optional[int] = None,
                  rope_dtype: Optional[torch.dtype] = None, rope_chunk: int = 1024, rope_impl: str = "auto",
-                 fp32_islands: bool = False, attn_backend: str = "auto"):
+                 fp32_islands: bool = False, attn_backend: str = "auto", attn_impl: str = "sdpa"):
         if dtype not in (torch.bfloat16, torch.float32):
             raise ValueError(f"compute dtype must be bfloat16 or float32, got {dtype}")
         if backend not in ("auto", "ck", "torch") or precision not in ("a8", "a16") or attn_backend not in ("auto", "default"):
             raise ValueError(f"bad backend/precision/attn_backend: {backend!r}/{precision!r}/{attn_backend!r}")
+        if attn_impl not in ("sdpa", "int8"):
+            raise ValueError(f"attn_impl must be 'sdpa' (exact, the reference) or 'int8', got {attn_impl!r}")
         if cfg.curve_grid < 2 or glob.adaln_t_table is None:
             raise NotImplementedError("only curve-form checkpoints (adaln_t_table, no time embedder) are supported")
         if tuple(cfg.patch[1:]) != (2, 2):
@@ -130,6 +144,8 @@ class H3Model:
         self.cfg, self.provider, self.device, self.dtype = cfg, provider, torch.device(device), dtype
         self.backend, self.precision = backend, precision
         self.mlp_chunk, self.attn_chunk, self.rope_chunk = mlp_chunk, attn_chunk, rope_chunk
+        self._int8_attention = _int8_attention_fn(device) if attn_impl == "int8" else None
+        self.attn_impl = attn_impl
         self.rope_dtype = rope_dtype or dtype
         self.rope_impl = resolve_rope_impl(rope_impl, device, dtype, self.rope_dtype)
         self.glob = glob
@@ -189,6 +205,10 @@ class H3Model:
             norm_rope_(q, k, w.q_norm, w.k_norm, cfg.qk_norm_eps, *rope[:2], impl=self.rope_impl, table=rope[2],
                        chunk=self.rope_chunk)
         qh, kh, vh = (t.transpose(0, 1).unsqueeze(0) for t in (q, k, v))  # [1, heads, S, hd] strided views
+        if self._int8_attention is not None and rope is not None:  # main blocks only; the short token refiner stays exact
+            o = self._int8_attention(qh.contiguous(), kh.contiguous(), vh.contiguous()).transpose(1, 2).reshape(s, inner)
+            del qkv, q, k, v, qh, kh, vh
+            return self._matmul(o, w.out)
         step = self.attn_chunk or s
         prio = self._sdpa_prio if s * inner >= 1024 * 128 else None  # ComfyUI's size rule for using the priority order
 
