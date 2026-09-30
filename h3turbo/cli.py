@@ -163,6 +163,19 @@ def main(argv=None):
     n.add_argument("--ckpt", required=True)
     n.set_defaults(fn=cmd_info)
 
+    # official H3 (4-bit W4A8/ConvRot checkpoint) engine: the sub-commands own their argument parsing
+    for name, help_ in (("h3-convert", "ComfyUI W4A8 H3 checkpoint -> streaming .h3t (lossless)"),
+                        ("h3-info", "describe an .h3t file"),
+                        ("h3-bench", "time real DiT forwards of an .h3t on this GPU")):
+        sub.add_parser(name, help=help_, add_help=False)
+
+    if argv is None:
+        argv = sys.argv[1:]
+    if argv and argv[0] in ("h3-convert", "h3-info", "h3-bench"):
+        from .h3 import bench, convert
+
+        fn = {"h3-convert": convert.main, "h3-info": convert.info_main, "h3-bench": bench.main}[argv[0]]
+        sys.exit(fn(argv[1:]))
     a = ap.parse_args(argv)
     a.fn(a)
 

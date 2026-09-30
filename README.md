@@ -2,7 +2,7 @@
 
 A compact, fast, **omni-modal** generator in the [MiniMax H3](https://www.minimax.io/news/minimax-h3-open-source) mould, designed for consumer GPUs (RTX 3050 and up): text, images, video and audio in; video and/or audio out, from one model, in a few sampling steps.
 
-It is a **new small architecture that follows H3's design**, not a compressed copy of H3's weights. Read [What is and isn't verified](#what-is-and-isnt-verified) before relying on any claim here.
+The small tiers below are a **new architecture that follows H3's design**, not a compressed copy of H3's weights. Separately, [`h3turbo/h3/`](#official-h3-4-bit-checkpoint) runs the **official H3 DiT** from a 4-bit W4A8/ConvRot checkpoint on a 6 GB card. Read [What is and isn't verified](#what-is-and-isnt-verified) before relying on any claim here.
 
 ## Why a separate small model
 
@@ -100,6 +100,38 @@ Why this should be fast, from the design rather than from a measurement: a forwa
 
 **RTX 3050 specifics.** Ampere has bf16 and int8 tensor cores but **no FP8**, so the low-precision path here is weight-only int8/int4 (`--quant int8`), not FP8/NVFP4 (which need Ada/Blackwell and are not implemented). Cards come with 4, 6 or 8 GB: `base` fp16 is the comfortable choice at 6 GB, `large` int8 at 6-8 GB. If a tier does not fit, `--offload N` keeps N blocks resident and streams the rest from system RAM.
 
+## Official H3 (4-bit checkpoint)
+
+`h3turbo/h3/` runs the real 50-block, hidden-5376 H3 DiT from a ComfyUI-layout **W4A8 + ConvRot** checkpoint (4-bit codebook weights, fp8 group scales, int8 activations on int8 tensor cores), streaming blocks from system RAM behind compute. No training or requantisation is involved: the conversion is a lossless re-layout.
+
+```bash
+h3turbo h3-convert  minimax_h3_..._w4a8_convrot.safetensors  model.h3t      # 12.55 GB -> 12.55 GB, verified byte for byte
+h3turbo h3-info     model.h3t
+h3turbo h3-bench    model.h3t --width 512 --height 320 --seconds 1.4       # real forwards on this GPU
+```
+
+```python
+from h3turbo.h3.engine import H3Engine
+with H3Engine.from_h3t("model.h3t") as eng:                  # keeps as many blocks resident as fit, streams the rest
+    refined = eng.encode_text(qwen_states)                   # [1, L, 5120] Qwen3-VL states from your own encoder
+    v_video, v_audio = eng.velocity([video_latent, audio_latent], sigma, refined_text=refined)
+    video, audio = eng.sample((T, H, W), audio_frames, qwen_states, steps=8, seed=0)   # Euler, H3 shifts 12 / 3
+```
+
+**Measured** (RTX 3050 6 GB, about 4.9 GB free, PCIe Gen3 x8 at 6.5 GB/s, real checkpoint, random latents and text, bf16 compute, `scripts/h3_real_check.py`):
+
+| tokens | example | native ComfyUI 0.37.4 + comfy_kitchen 0.2.35 | this engine | output vs native |
+|---|---|---|---|---|
+| 1,768 | 512x320, 33 frames | 3.39 s / forward | 2.55 s | bit-identical (max abs 0) at 6 sigmas |
+| 4,448 | 512x320, 97 frames | 9.29 s | 8.60 s | bit-identical |
+| 8,512 | 768x448, 4 s | not run | 25.5 s (peak VRAM 4.78 GiB) | not compared |
+
+Each forward is one sampling step; the checkpoint is an 8-step turbo model, so a clip costs about 8x the figure. 13 of 50 blocks stay on the GPU, 37 are copied in behind compute with no stalls (`stats()['waits'] == 0`); the gain over native is the hidden copy time and it shrinks as sequences get longer and compute dominates. The linears run at 25-39 TOPS through comfy_kitchen's CUDA kernels; without comfy_kitchen a portable torch path is used (about 2x slower per block, measured by the qlinear check script).
+
+**Quality.** The engine is the same network as ComfyUI's, so it has the checkpoint's quality, no more. Against the sibling int8 file, the 4-bit weights differ by 7.3% relative L2 per layer (checked on blocks 0, 25, 49); int8 activation quantisation adds about 1% per layer against an fp64 reference, and skipping it (`precision="a16"`) only moves the error against the int8 function from about 7.4% to 7.3%. Weight precision, not activations, is what limits fidelity. If you have the VRAM/RAM, the int8 sibling is the higher-quality file; this engine does not load it.
+
+**Not done / not verified.** Text encoding (Qwen3-VL) and the VAEs are inputs and outputs of the engine, not part of it, and no clip has been generated through it, so there is no end-to-end visual quality check. Only the RTX 3050 was available: the "everything resident on a big card" plan is arithmetic, not a run. Parity holds only for identical inputs: with random inputs the network is chaotic (a 1-ulp change in sigma moved the video output by 6-12% in this test), so compare same-sigma outputs, and note ComfyUI computes `timestep / 1000` on the GPU (1 ulp off the exact value). No fp8/fp4 path, no int8 attention (comfy_kitchen has one; it halves attention time at about 1.6% attention error on Gaussian data, unvalidated on real content), no multi-GPU.
+
 ## ComfyUI
 
 Clone the repo into `ComfyUI/custom_nodes/` (no pip install needed) and put checkpoints in `ComfyUI/models/h3turbo/`.
@@ -150,7 +182,7 @@ trainable = model.freeze_shared()   # only depth's IO layers and AdaLN branch re
 
 ### Verified, by running it here (CPU only)
 
-* **90 tests pass** (`pytest`, ~25-45 s). They check the invariants that matter rather than just shapes: cached AdaLN modulation equals the direct path bit for bit; adding a modality trains only its own weights; gradient checkpointing gives identical gradients; the video VAE is causal, and streamed decode equals whole-clip decode to 1e-4 at every chunk size (including ragged ones); every omni task's pin mask pins exactly the intended tokens and leaves pinned tokens untouched through denoising; a checkpoint round-trips bit-exact in fp32; quantised checkpoints round-trip; the analytic FLOP formula equals PyTorch's own counter exactly; the sampling schedule starts where the sample really is.
+* **282 tests pass** (`pytest`, ~45 s; 5 CUDA-only tests skip on CPU). One test, `test_pipeline.py::test_compile_keeps_keys_and_matches_eager`, fails on this Windows machine because torch.compile finds no MSVC `cl`; it failed before the official-H3 engine was added and is unrelated to it. They check the invariants that matter rather than just shapes: cached AdaLN modulation equals the direct path bit for bit; adding a modality trains only its own weights; gradient checkpointing gives identical gradients; the video VAE is causal, and streamed decode equals whole-clip decode to 1e-4 at every chunk size (including ragged ones); every omni task's pin mask pins exactly the intended tokens and leaves pinned tokens untouched through denoising; a checkpoint round-trips bit-exact in fp32; quantised checkpoints round-trip; the analytic FLOP formula equals PyTorch's own counter exactly; the sampling schedule starts where the sample really is.
 * **Real ComfyUI, end to end** (`scripts/comfyui_e2e.py`): the server is started headless, all six nodes register, and workflows submitted through its HTTP API produce a correct result. Text→video+audio muxed by core *Create Video* / *Save Video* to an mp4 (H.264 + AAC, audio and video the same length) that reads back as the requested colour and direction; a pinned image → video → *Refine* whose frames read back as the pinned colour moving the prompted way; audio-only generation.
 * **The demo checkpoint does what it was trained to do**, measured against ground truth ([full tables](weights/README.md)): text → video+audio 1.00 colour and direction in the video, 0.99 / 0.94 in the audio; image → video 1.00, with the pinned frame reproduced exactly; video → audio 0.99 / 0.93; audio → video 0.90 / 1.00; reference → video 0.98 (chance is 0.25). Sampling steps: video is right at 1 step, audio needs about 4, and reflow distillation buys a real improvement at 1-2 steps (audio level 0.48 → 0.69 at 1 step).
 * **Quantisation, measured on the trained model** (same evaluation, n=96): int8 is indistinguishable from fp32 (every metric within 0.01, identical interpolation error); int4, plain round-to-nearest with no calibration, costs a little (video → audio level 0.99 → 0.90, text → audio level 0.99 → 0.96, first+last-frame middle-frame error 8.2 → 8.8 px) and leaves the rest unchanged. This is a 5 M-parameter model, and I did not measure the larger tiers, so do not extrapolate either way.
@@ -159,7 +191,7 @@ trainable = model.freeze_shared()   # only depth's IO layers and AdaLN branch re
 
 * **No GPU was available, so nothing here has run on CUDA and there are no RTX 3050 timings.** I do not claim any speed number. The design choices that should make it fast (a small model, 2-4 steps, cached AdaLN, SDPA/flash, weight-only quantisation, streamed VAE decode) are real, and `h3turbo bench --measure` will give you the actual figures on your card, but until someone runs it, "very fast on an RTX 3050" is an intent, not a result. The CUDA-only paths (block-swap stream prefetch, bf16/fp16 flash attention, `torch.compile` on GPU) are written but unexercised; on CPU the tests cover the bookkeeping and the numerics, not stream overlap.
 * **There is no strong, general model here.** Only the 5 M `nano` demo is trained, and only on a toy dataset (its "audio" is inaudible infrasound). The `small` … `xl` tiers are architecture and shape-correct random initialisations. Making one of them good means training it on real data at real scale, which this repository provides the code for but did not do.
-* **Official MiniMax H3 weights are not loaded or distilled from.** I could not reach Hugging Face from this environment, so I could not read the checkpoint layout, and I did not guess at it. Official H3 already runs in ComfyUI natively; this project is a separate, small model.
+* **The small tiers do not use official H3 weights** and are not distilled from them. Official H3 runs separately through [`h3turbo/h3/`](#official-h3-4-bit-checkpoint), which reads the real checkpoint layout.
 * **Refinement has no measured benefit yet.** On the toy it keeps colour and direction (1.00) but is indistinguishable from a no-op in PSNR because the VAE (19.3 dB roundtrip) is the ceiling. Whether in-context regeneration improves real content is untested. The optional context resampler is implemented and shape-tested but untrained.
 * **First + last frame interpolation is only partial** on the toy: the middle frame lands 8.2 px from the ideal against 14.4 for a static square (the VAE alone allows 2.3).
 * int4 is plain round-to-nearest with no calibration; FP8 / NVFP4 are not implemented (Ampere has no FP8 tensor cores; Ada/Blackwell would). No guidance-distillation script. The pipeline generates one video at a time. The mp4 writer needs PyAV.
