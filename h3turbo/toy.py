@@ -91,6 +91,20 @@ def synth_audio(scene: Scene, samples: int, generator: Optional[torch.Generator]
 
 
 # --------------------------------------------------------------------------- analysis
+def centroids(video: torch.Tensor) -> np.ndarray:
+    """uint8 [T,H,W,3] -> [T,2] (x, y) centroid of the square per frame; NaN where none is visible."""
+    x = video.float() / 127.5 - 1.0
+    T, H, W, _ = x.shape
+    mask = (x - BG).abs().amax(-1) > 0.6
+    ys, xs = torch.meshgrid(torch.arange(H, dtype=torch.float32), torch.arange(W, dtype=torch.float32), indexing="ij")
+    out = np.full((T, 2), np.nan)
+    for t in range(T):
+        m = mask[t]
+        if m.sum() >= 4:
+            out[t] = (xs[m].mean().item(), ys[m].mean().item())
+    return out
+
+
 def analyze_video(video: torch.Tensor) -> Dict[str, Optional[int]]:
     """uint8 [T,H,W,3] -> {"color": idx, "direction": idx} estimated from pixels (None if no square)."""
     x = video.float() / 127.5 - 1.0  # [T,H,W,3]
@@ -98,16 +112,12 @@ def analyze_video(video: torch.Tensor) -> Dict[str, Optional[int]]:
     mask = (x - BG).abs().amax(-1) > 0.6
     if mask.sum() < 4:
         return {"color": None, "direction": None}
-    ys, xs = torch.meshgrid(torch.arange(H, dtype=torch.float32), torch.arange(W, dtype=torch.float32), indexing="ij")
-    cents = []
-    for t in range(T):
-        m = mask[t]
-        cents.append((xs[m].mean().item(), ys[m].mean().item()) if m.sum() >= 4 else None)
-    valid = [c for c in cents if c is not None]
+    cents = centroids(video)
+    valid = cents[~np.isnan(cents[:, 0])]
     color = int(((x[mask].mean(0)[None] - RGB).abs().sum(-1)).argmin())
     k = max(1, len(valid) // 3)
-    a = np.mean(valid[:k], axis=0)
-    b = np.mean(valid[-k:], axis=0)
+    a = valid[:k].mean(axis=0)
+    b = valid[-k:].mean(axis=0)
     dx, dy = b - a
     if abs(dx) < 0.02 * W and abs(dy) < 0.02 * H:
         return {"color": color, "direction": None}

@@ -110,6 +110,39 @@ class Upsample(nn.Module):
         return self.conv(x)
 
 
+def _shortcut_groups(latent_ch: int) -> int:
+    per = 3 * VIDEO_SPATIAL * VIDEO_SPATIAL
+    if per % latent_ch:
+        raise ValueError(f"latent_ch {latent_ch} must divide {per} for the residual shortcut")
+    return per // latent_ch
+
+
+def encode_shortcut(x: torch.Tensor, latent_ch: int) -> torch.Tensor:
+    """Parameter-free f16t4 projection of the input onto latent shape: pixel-unshuffle each
+    frame, average channel groups down to `latent_ch`, then average time in groups of 4
+    (the first frame stays on its own, matching the causal layout). Causal by construction.
+    The encoder learns a residual on top of this (DC-AE-style residual autoencoding)."""
+    B, C, T, H, W = x.shape
+    g = _shortcut_groups(latent_ch)
+    y = F.pixel_unshuffle(x.permute(0, 2, 1, 3, 4).reshape(B * T, C, H, W), VIDEO_SPATIAL)
+    h, w = y.shape[-2:]
+    y = y.reshape(B, T, latent_ch, g, h, w).mean(3).permute(0, 2, 1, 3, 4)  # [B, L, T, h, w]
+    rest = y[:, :, 1:].reshape(B, latent_ch, (T - 1) // VIDEO_TEMPORAL, VIDEO_TEMPORAL, h, w).mean(3)
+    return torch.cat([y[:, :, :1], rest], dim=2)
+
+
+def decode_shortcut(z: torch.Tensor, first_is_single: bool = True) -> torch.Tensor:
+    """Inverse layout of `encode_shortcut`: repeat channels, pixel-shuffle, repeat time x4.
+    `first_is_single` is False for a streamed chunk that does not start the clip."""
+    B, L, T, h, w = z.shape
+    g = _shortcut_groups(L)
+    y = z.repeat_interleave(g, dim=1).permute(0, 2, 1, 3, 4).reshape(B * T, L * g, h, w)
+    y = F.pixel_shuffle(y, VIDEO_SPATIAL).reshape(B, T, 3, h * VIDEO_SPATIAL, w * VIDEO_SPATIAL).permute(0, 2, 1, 3, 4)
+    if first_is_single:
+        return torch.cat([y[:, :, :1], y[:, :, 1:].repeat_interleave(VIDEO_TEMPORAL, dim=2)], dim=2)
+    return y.repeat_interleave(VIDEO_TEMPORAL, dim=2)
+
+
 class VideoVAE(nn.Module):
     def __init__(self, cfg: VideoVAEConfig):
         super().__init__()
@@ -141,6 +174,8 @@ class VideoVAE(nn.Module):
         with torch.no_grad():  # start as a near-deterministic autoencoder; the KL term relaxes it
             self.enc_out.conv.bias[cfg.latent_ch :].fill_(-6.0)
 
+        self._streaming, self._stream_started = False, False
+
         # latent normalisation (fitted after training so latents are ~unit variance)
         self.register_buffer("latent_mean", torch.zeros(cfg.latent_ch))
         self.register_buffer("latent_std", torch.ones(cfg.latent_ch))
@@ -151,6 +186,7 @@ class VideoVAE(nn.Module):
         self._check(x)
         h = self.enc_out(F.silu(self.enc_norm(self.encoder(x))))
         mean, logvar = h.chunk(2, dim=1)
+        mean = mean + encode_shortcut(x, self.cfg.latent_ch).to(mean.dtype)
         return mean, logvar.clamp(-20, 4)
 
     def normalize(self, z):
@@ -168,7 +204,10 @@ class VideoVAE(nn.Module):
 
     def decode_raw(self, z: torch.Tensor) -> torch.Tensor:
         """z: raw (un-normalised) latents -> [B, 3, T, H, W]."""
-        return self.dec_out(F.silu(self.dec_norm(self.decoder(z))))
+        out = self.dec_out(F.silu(self.dec_norm(self.decoder(z))))
+        first = not (self._streaming and self._stream_started)
+        self._stream_started = True
+        return out + decode_shortcut(z, first).to(out.dtype)
 
     @torch.no_grad()
     def decode(self, z: torch.Tensor) -> torch.Tensor:
@@ -186,6 +225,7 @@ class VideoVAE(nn.Module):
 
     # ------------------------------------------------------------------ tiled decode
     def _stream(self, on: bool) -> None:
+        self._streaming, self._stream_started = on, False
         for m in self.decoder.modules():
             if isinstance(m, (CausalConv3d, Upsample)):
                 m.set_stream(on)

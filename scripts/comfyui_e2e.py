@@ -26,6 +26,14 @@ def call(port, path, payload=None):
         raise RuntimeError(f"{path} -> HTTP {e.code}: {e.read().decode()[:2000]}")
 
 
+def read_mp4_frames(path):
+    import av
+    import torch
+
+    with av.open(path) as c:
+        return torch.from_numpy(__import__("numpy").stack([f.to_ndarray(format="rgb24") for f in c.decode(video=0)]))
+
+
 def run_graph(port, graph, timeout=600):
     pid = call(port, "/prompt", {"prompt": graph})["prompt_id"]
     t0 = time.time()
@@ -92,6 +100,11 @@ def main():
               "4": {"class_type": "SaveVideo", "inputs": {"video": ["3", 0], "filename_prefix": "h3turbo_e2e/t2va", "format": "mp4", "codec": "h264"}}}
         out = run_graph(a.port, g1)
         print("t2va outputs:", json.dumps(out)[:300])
+        mp4 = os.path.join(a.comfy, "output", out["4"]["images"][0]["subfolder"], out["4"]["images"][0]["filename"])
+        frames = read_mp4_frames(mp4)
+        seen = toy.analyze_video(frames)
+        print(f"t2va content read back from the mp4: {seen} (prompt: red, left)")
+        assert seen == {"color": 0, "direction": 0}, seen
 
         # 2) image -> video via Pin Frames, then in-context refine, saved as PNG frames
         g2 = {"1": loader,
@@ -105,6 +118,14 @@ def main():
         imgs = out["8"]["images"]
         print("i2v+refine frames written:", len(imgs))
         assert len(imgs) == 9
+        from PIL import Image
+        import numpy as np, torch
+
+        video = torch.from_numpy(np.stack([np.asarray(Image.open(os.path.join(a.comfy, "output", i["subfolder"], i["filename"])).convert("RGB")) for i in imgs]))
+        seen = toy.analyze_video(video)
+        print(f"i2v+refine content read back: {seen} (pinned blue first frame, prompt: right)")
+        assert seen == {"color": 2, "direction": 1}, seen
+        assert video.shape[1:3] == (160, 160), video.shape  # 96 * 1.5 = 144, snapped to a multiple of 32 (halves up)
 
         # 3) audio-only generation from the same checkpoint
         g3 = {"1": loader,

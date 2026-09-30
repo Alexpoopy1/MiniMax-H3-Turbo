@@ -29,15 +29,32 @@ def log(*a):
     print(time.strftime("%H:%M:%S"), *a, flush=True)
 
 
+def save_atomic(obj, path):
+    torch.save(obj, path + ".tmp")
+    os.replace(path + ".tmp", path)  # a kill mid-write can never leave a corrupt checkpoint
+
+
+def try_resume(path, **states):
+    """Load `path` if present into the given {name: object with load_state_dict}. Returns the step."""
+    if not path or not os.path.exists(path):
+        return 0
+    ck = torch.load(path)
+    for name, obj in states.items():
+        obj.load_state_dict(ck[name])
+    log(f"resumed from {path} at step {ck['step']}")
+    return ck["step"]
+
+
 def scene_frames(scene, side, T=T_FRAMES):
     return toy.render(scene, side, T).permute(1, 0, 2, 3)  # [3,T,H,W]
 
 
 # --------------------------------------------------------------------------- VAEs
-def train_video_vae(vae, steps, bs, lr, seed):
-    rng = np.random.default_rng(seed)
+def train_video_vae(vae, steps, bs, lr, seed, ckpt=None):
     opt = torch.optim.AdamW(vae.parameters(), lr=lr, betas=(0.9, 0.99), weight_decay=0.0)
-    for step in range(steps):
+    start = try_resume(ckpt, model=vae, opt=opt)
+    rng = np.random.default_rng(seed + start)
+    for step in range(start, steps):
         for g in opt.param_groups:
             g["lr"] = cosine_lr(step, steps, lr, warmup=50)
         side = int(rng.choice([LO, HI]))
@@ -56,13 +73,16 @@ def train_video_vae(vae, steps, bs, lr, seed):
         if step % 50 == 0 or step == steps - 1:
             fg_l1 = (err * fg).sum().item() / (3 * fg.sum().item() + 1e-9)
             log(f"vae_video {step}/{steps} l1={err.mean().item():.4f} foreground_l1={fg_l1:.4f} (1.6 = paints background)")
+        if ckpt and step % 100 == 99:
+            save_atomic({"model": vae.state_dict(), "opt": opt.state_dict(), "step": step + 1}, ckpt)
 
 
-def train_audio_vae(vae, steps, bs, lr, seed):
-    rng = np.random.default_rng(seed + 1)
+def train_audio_vae(vae, steps, bs, lr, seed, ckpt=None):
     opt = torch.optim.AdamW(vae.parameters(), lr=lr, betas=(0.9, 0.99), weight_decay=0.0)
+    start = try_resume(ckpt, model=vae, opt=opt)
+    rng = np.random.default_rng(seed + 1 + start)
     crop = 20 * AUDIO_HOP
-    for step in range(steps):
+    for step in range(start, steps):
         for g in opt.param_groups:
             g["lr"] = cosine_lr(step, steps, lr, warmup=50)
         waves = []
@@ -82,6 +102,8 @@ def train_audio_vae(vae, steps, bs, lr, seed):
         opt.step()
         if step % 50 == 0 or step == steps - 1:
             log(f"vae_audio {step}/{steps} l1={l1.item():.4f} (silence = {x.abs().mean().item():.3f})")
+        if ckpt and step % 100 == 99:
+            save_atomic({"model": vae.state_dict(), "opt": opt.state_dict(), "step": step + 1}, ckpt)
 
 
 # --------------------------------------------------------------------------- latent cache
@@ -121,24 +143,40 @@ def build_cache(vv, av, n, seed):
 
 
 # --------------------------------------------------------------------------- DiT
-def train_dit(pipe, cache, steps, bs, lr, seed, mix):
+class _Shadow:
+    """Adapter so an EMA's shadow weights go through try_resume/save like a module."""
+
+    def __init__(self, ema):
+        self.ema = ema
+
+    def state_dict(self):
+        return {"shadow": self.ema.shadow, "n": self.ema.n}
+
+    def load_state_dict(self, d):
+        for s_, v in zip(self.ema.shadow, d["shadow"]):
+            s_.copy_(v)
+        self.ema.n = d["n"]
+
+
+def train_dit(pipe, cache, steps, bs, lr, seed, mix, ckpt=None, patterns=None):
     model, te = pipe.model, pipe.text_encoder
     params = list(model.parameters()) + list(te.parameters())
     opt = torch.optim.AdamW(params, lr=lr, betas=(0.9, 0.99), weight_decay=0.01)
     ema = EMA(params, 0.995)
-    rng, gen = np.random.default_rng(seed + 5), torch.Generator().manual_seed(seed + 6)
+    start = try_resume(ckpt, model=model, te=te, opt=opt, ema=_Shadow(ema))
+    rng, gen = np.random.default_rng(seed + 5 + start), torch.Generator().manual_seed(seed + 6 + start)
     n = len(cache["prompts"])
     geo = Geo(lat_t=3, hp=HI // 32, wp=HI // 32, fps=FPS, lo_hp=LO // 32, lo_wp=LO // 32)
     names, probs = list(mix), np.array(list(mix.values())) / sum(mix.values())
     model.train(); te.train()
     run, t0 = {}, time.time()
-    for step in range(steps):
+    for step in range(start, steps):
         for g in opt.param_groups:
             g["lr"] = cosine_lr(step, steps, lr, warmup=150)
         idx = rng.integers(0, n, size=bs)
         batch = {k: ([cache[k][i] for i in idx] if k == "prompts" else cache[k][idx]) for k in cache}
         structure = names[int(rng.choice(len(names), p=probs))]
-        loss, st = flow_loss(model, te, batch, structure, geo, rng, gen)
+        loss, st = flow_loss(model, te, batch, structure, geo, rng, gen, patterns=patterns)
         opt.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(params, 1.0)
@@ -147,7 +185,9 @@ def train_dit(pipe, cache, steps, bs, lr, seed, mix):
         run.setdefault(structure, []).append(loss.item())
         if step % 100 == 0 or step == steps - 1:
             summary = " ".join(f"{k}={np.mean(v[-50:]):.3f}" for k, v in sorted(run.items()))
-            log(f"dit {step}/{steps} {summary}  ({(time.time()-t0)/(step+1):.2f}s/step)")
+            log(f"dit {step}/{steps} {summary}  ({(time.time()-t0)/(step+1-start):.2f}s/step)")
+        if ckpt and step % 250 == 249:
+            save_atomic({"model": model.state_dict(), "te": te.state_dict(), "opt": opt.state_dict(), "ema": _Shadow(ema).state_dict(), "step": step + 1}, ckpt)
     ema.copy_to()
     model.eval(); te.eval()
 
@@ -165,6 +205,9 @@ def main():
     ap.add_argument("--threads", type=int, default=4)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--stage", default="all", choices=["all", "vae_video", "vae_audio", "dit"])
+    ap.add_argument("--init-from", default=None, help="start the dit stage from this checkpoint (fine-tuning)")
+    ap.add_argument("--cross-modal-boost", action="store_true",
+                    help="fine-tune emphasis: weight the video->audio and audio->video pin patterns up")
     a = ap.parse_args()
     torch.set_num_threads(a.threads)
     torch.manual_seed(a.seed)
@@ -176,12 +219,12 @@ def main():
     if a.stage in ("all", "vae_video"):
         p = os.path.join(a.workdir, "vae_video.pt")
         if not os.path.exists(p):
-            train_video_vae(vv, a.vae_video_steps, 8, 2e-3, a.seed)
+            train_video_vae(vv, a.vae_video_steps, 8, 2e-3, a.seed, ckpt=p + ".resume")
             torch.save(vv.state_dict(), p)
     if a.stage in ("all", "vae_audio"):
         p = os.path.join(a.workdir, "vae_audio.pt")
         if not os.path.exists(p):
-            train_audio_vae(av, a.vae_audio_steps, 16, 1e-3, a.seed)
+            train_audio_vae(av, a.vae_audio_steps, 16, 1e-3, a.seed, ckpt=p + ".resume")
             torch.save(av.state_dict(), p)
     if a.stage != "all" and a.stage != "dit":
         return
@@ -199,11 +242,17 @@ def main():
         torch.save(cache, cp)
     log("cache ready", {k: (len(v) if isinstance(v, list) else tuple(v.shape)) for k, v in cache.items()})
 
-    pipe = build_pipeline(cfg, "cpu", torch.float32)
+    if a.init_from:
+        from h3turbo.io import load_checkpoint
+
+        pipe = load_checkpoint(a.init_from, "cpu", torch.float32)
+    else:
+        pipe = build_pipeline(cfg, "cpu", torch.float32)
     pipe.video_vae.load_state_dict(vv.state_dict())
     pipe.audio_vae.load_state_dict(av.state_dict())
     mix = {"full": 0.60, "video": 0.06, "audio": 0.06, "ref": 0.14, "refine": 0.14}
-    train_dit(pipe, cache, a.dit_steps, a.bs, a.lr, a.seed, mix)
+    patterns = {"none": 0.15, "first": 0.10, "first_last": 0.10, "prefix": 0.05, "video_full": 0.40, "audio_full": 0.20} if a.cross_modal_boost else None
+    train_dit(pipe, cache, a.dit_steps, a.bs, a.lr, a.seed, mix, ckpt=os.path.join(a.workdir, "dit.resume"), patterns=patterns)
     save_checkpoint(a.out, pipe, dtype=torch.float32, extra_meta={"trained_on": "h3turbo.toy synthetic dataset", "dit_steps": a.dit_steps})
     log("saved", a.out)
 

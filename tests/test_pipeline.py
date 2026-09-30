@@ -269,3 +269,9 @@ def test_conditioning_past_the_end_is_an_error_not_silently_dropped(pipe):
         pipe("x", context=OmniContext(video=[VideoCond(_clip(pipe, 1, 0.0), frame_index=40)]), **KW)
     with pytest.raises(ValueError, match="past the end"):
         pipe("x", context=OmniContext(audio=[AudioCond(torch.zeros(8000), start_sec=9.0)]), **KW)
+
+
+def test_snap_size_rounds_halves_up_and_has_a_floor():
+    from h3turbo.layout import snap_size
+
+    assert [snap_size(v) for v in (144, 112, 80, 70, 50, 16, 1)] == [160, 128, 96, 64, 64, 32, 32]

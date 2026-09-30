@@ -12,7 +12,8 @@ dependencies = ["torch>=2.4", "safetensors>=0.4", "numpy"]
 
 [project.optional-dependencies]
 video = ["av"]  # mp4 (h264 + aac) export
-dev = ["pytest"]
+image = ["pillow"]  # image input for the CLI
+dev = ["pytest", "av", "pillow"]
 
 [project.scripts]
 h3turbo = "h3turbo.cli:main"

@@ -1,0 +1,49 @@
+{
+ "steps": 4,
+ "n": 96,
+ "chance": 0.25,
+ "tasks": {
+  "t2va": {
+   "video colour": 1.0,
+   "video direction": 1.0,
+   "audio level=colour": 1.0,
+   "audio frequency=direction": 0.9270833333333334,
+   "audio level agrees with video colour": 1.0
+  },
+  "t2v (no audio)": {
+   "video colour": 1.0,
+   "video direction": 1.0
+  },
+  "i2v": {
+   "video colour": 1.0,
+   "video direction": 1.0,
+   "first frame == VAE roundtrip of input (MAE<2/255)": 1.0
+  },
+  "first+last frame (no prompt)": {
+   "video colour": 1.0,
+   "video direction": 1.0,
+   "middle frame within 8 px of the midpoint": 0.5520833333333334,
+   "mean middle-frame error (px; static square = 14)": 8.231542210940148,
+   "floor: VAE(true clip) middle-frame error (px)": 2.2988373061052303
+  },
+  "video->audio": {
+   "audio level=colour": 0.9791666666666666,
+   "audio frequency=direction": 0.9270833333333334
+  },
+  "audio->video (no prompt)": {
+   "video colour": 0.8958333333333334,
+   "video direction": 1.0
+  },
+  "reference image (no prompt)": {
+   "video colour": 0.9791666666666666
+  },
+  "refine 64->96": {
+   "PSNR refined (dB)": 19.09128998385597,
+   "PSNR bicubic, no VAE (dB)": 29.572878339227245,
+   "PSNR bicubic through VAE, no regeneration (dB)": 19.207129837156593,
+   "PSNR ceiling: VAE(truth) (dB)": 19.255345718741967,
+   "video colour": 1.0,
+   "video direction": 1.0
+  }
+ }
+}

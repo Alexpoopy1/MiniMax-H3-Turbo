@@ -50,9 +50,11 @@ def sample_sigma(B: int, shift: float, gen: torch.Generator) -> torch.Tensor:
     return (shift * u / (1 + (shift - 1) * u)).clamp(1e-3, 1.0)
 
 
-def sample_pins(B: int, geo: Geo, Na: int, rng: np.random.Generator):
-    names = list(PATTERNS)
-    choice = rng.choice(len(names), size=B, p=list(PATTERNS.values()))
+def sample_pins(B: int, geo: Geo, Na: int, rng: np.random.Generator, patterns: Optional[Dict[str, float]] = None):
+    patterns = patterns or PATTERNS
+    names = list(patterns)
+    p = np.array(list(patterns.values()), dtype=float)
+    choice = rng.choice(len(names), size=B, p=p / p.sum())
     per_frame = geo.hp * geo.wp
     pin_v = torch.zeros(B, geo.lat_t, per_frame, dtype=torch.bool)
     pin_a = torch.zeros(B, Na, dtype=torch.bool)
@@ -82,6 +84,8 @@ def flow_loss(
     shift: float = 3.0,
     text_drop: float = 0.1,
     w_audio: float = 1.0,
+    patterns: Optional[Dict[str, float]] = None,
+    cross_modal_text_drop: float = 0.6,
 ):
     """batch: prompts (List[str]), video [B,Nv,D], audio [B,Na,D], optionally ref [B,Nr,D]
     (a clean reference image) and video_lo [B,Nl,D] (low-res clip, for "refine").
@@ -91,7 +95,19 @@ def flow_loss(
     dev = next(model.parameters()).device
     vid, aud = batch["video"].to(dev), batch["audio"].to(dev)
     B = vid.shape[0]
-    prompts = ["" if rng.random() < text_drop else p for p in batch["prompts"]]
+    Nv, Na = vid.shape[1], aud.shape[1]
+    pin_v = torch.zeros(B, Nv, dtype=torch.bool, device=dev)
+    pin_a = torch.zeros(B, Na, dtype=torch.bool, device=dev)
+    names = ["-"] * B
+    if structure == "full":
+        pv, pa, names = sample_pins(B, geo, Na, rng, patterns)
+        pin_v, pin_a = pv.to(dev), pa.to(dev)
+    # When the other modality is fully given, the prompt is redundant for the attributes it
+    # carries (e.g. motion direction in a pinned video). If the prompt is nearly always
+    # present the model learns to read it and never learns to use the pinned modality, so
+    # drop it much more often for those samples.
+    drop = [cross_modal_text_drop if n in ("video_full", "audio_full") else text_drop for n in names]
+    prompts = ["" if rng.random() < d else p for d, p in zip(drop, batch["prompts"])]
     ids, mask = text_encoder.tokenizer.batch(prompts)
     ids, mask = ids.to(dev), mask.to(dev)
     text = text_encoder(ids, mask)
@@ -109,14 +125,6 @@ def flow_loss(
         given = batch.get("eps_" + key)
         eps = given.to(dev) if given is not None else torch.randn(x0.shape, generator=gen).to(dev)
         return (1 - s) * x0 + s * eps, eps - x0
-
-    Nv, Na = vid.shape[1], aud.shape[1]
-    pin_v = torch.zeros(B, Nv, dtype=torch.bool, device=dev)
-    pin_a = torch.zeros(B, Na, dtype=torch.bool, device=dev)
-    names = ["-"] * B
-    if structure == "full":
-        pv, pa, names = sample_pins(B, geo, Na, rng)
-        pin_v, pin_a = pv.to(dev), pa.to(dev)
 
     pos_v = video_positions(geo.lat_t, geo.hp, geo.wp, device=dev)
     pos_a = audio_positions(Na, geo.fps, device=dev)

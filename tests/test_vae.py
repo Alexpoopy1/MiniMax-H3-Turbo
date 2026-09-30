@@ -110,3 +110,29 @@ def test_stft_loss_is_zero_for_identical_and_grows_with_mismatch():
     shifted = torch.sin(2 * torch.pi * 660 * t)[None].repeat(2, 1)
     assert stft_loss(x, shifted).item() > 0.5
     assert stft_loss(x, torch.zeros_like(x)).item() > stft_loss(x, x * 0.9).item()
+
+
+def test_residual_shortcut_alone_reconstructs_smooth_images_and_is_causal():
+    """The parameter-free path that makes f16 training converge: constant images round-trip
+    exactly, and a latent frame only depends on frames up to its own."""
+    from h3turbo.video_vae import decode_shortcut, encode_shortcut
+
+    x = torch.full((1, 3, 9, 32, 48), 0.3)
+    z = encode_shortcut(x, 24)
+    assert z.shape == (1, 24, 3, 2, 3)
+    assert (decode_shortcut(z) - x).abs().max() < 1e-6
+    y = torch.randn(1, 3, 9, 32, 32)
+    y2 = y.clone()
+    y2[:, :, 5:] = torch.randn_like(y2[:, :, 5:])
+    a, b = encode_shortcut(y, 24), encode_shortcut(y2, 24)
+    assert torch.equal(a[:, :, :2], b[:, :, :2]) and not torch.equal(a[:, :, 2], b[:, :, 2])
+
+
+def test_shortcut_streaming_matches_whole_clip():
+    from h3turbo.video_vae import decode_shortcut
+
+    z = torch.randn(1, 24, 5, 2, 2)
+    whole = decode_shortcut(z)
+    head = decode_shortcut(z[:, :, :2])
+    tail = decode_shortcut(z[:, :, 2:], first_is_single=False)
+    assert torch.equal(torch.cat([head, tail], 2), whole)

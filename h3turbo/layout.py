@@ -85,7 +85,9 @@ def snap_frames(n: int) -> int:
 
 
 def snap_size(v: int) -> int:
-    return max(PIXELS_PER_TOKEN, round(v / PIXELS_PER_TOKEN) * PIXELS_PER_TOKEN)
+    """Nearest multiple of 32, halves rounding up (Python's round() is half-to-even, which
+    would turn 144 into 128 rather than 160)."""
+    return max(PIXELS_PER_TOKEN, int(v / PIXELS_PER_TOKEN + 0.5) * PIXELS_PER_TOKEN)
 
 
 def latent_index_of_frame(frame: int) -> int:
