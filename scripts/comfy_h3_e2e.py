@@ -305,40 +305,50 @@ def cmd_run(a):
 
         threading.Thread(target=reader, daemon=True).start()
         threading.Thread(target=gpu_poll, daemon=True).start()
-        t_sub = time.perf_counter()
-        r = http(port, "/prompt", {"prompt": graph, "client_id": cid})
-        if r.get("node_errors"):
-            raise RuntimeError("node_errors: " + json.dumps(r["node_errors"])[:3000])
-        pid = r["prompt_id"]
-        print(f"[run] queued prompt {pid}", flush=True)
-        hist, last_print = None, 0
-        while hist is None:
-            if proc.poll() is not None:
-                raise RuntimeError(f"ComfyUI died mid-run (code {proc.returncode})")
-            if time.perf_counter() - t_sub > a.timeout:
-                http(port, "/interrupt", {})
-                raise TimeoutError(f"prompt did not finish in {a.timeout}s")
-            h = http(port, f"/history/{pid}")
-            hist = h.get(pid)
-            if hist is None:
-                time.sleep(1)
-                if time.time() - last_print > 60:
-                    last_print = time.time()
-                    prog = [d for _, ty, d in events if ty == "progress"]
-                    print(f"[run] {time.perf_counter() - t_sub:6.0f} s  running; last progress {prog[-1] if prog else '-'}", flush=True)
-        time.sleep(0.5)  # let the final ws frames land
-        wall = time.perf_counter() - t_sub
-        if hist["status"]["status_str"] != "success":
-            raise RuntimeError("execution failed: " + json.dumps(hist["status"]["messages"])[-3000:])
-        report_timing(events, graph, os.path.join(out, f"timing_{a.variant}.json"))
-        print(f"  wall time as seen by the harness: {wall:.1f} s;  GPU memory peak (nvidia-smi total, incl. desktop): {gpu_peak[0]} MiB")
-        vids = [os.path.join(out, "output", im.get("subfolder", ""), im["filename"]) for o in hist["outputs"].values() for im in o.get("images", [])]
-        vids = [v for v in vids if v.lower().endswith((".mp4", ".webm", ".mkv"))]
-        if not vids:
-            raise RuntimeError("no video in outputs: " + json.dumps(hist["outputs"])[:1000])
-        dst = os.path.join(out, f"result_{a.variant}.mp4")
-        shutil.copyfile(vids[0], dst)
-        print(f"[run] OK -> {dst} ({os.path.getsize(dst) / 1e6:.2f} MB)")
+        noise = next(g for g in graph.values() if g["class_type"] == "RandomNoise")
+
+        def one_run(it):
+            """Submit the graph (seed + it) and wait for it; timings of iteration `it` land in timing_<variant>[_it].json."""
+            nonlocal t_sub
+            noise["inputs"]["noise_seed"] = a.seed + it
+            events.clear()
+            t_sub = time.perf_counter()
+            r = http(port, "/prompt", {"prompt": graph, "client_id": cid})
+            if r.get("node_errors"):
+                raise RuntimeError("node_errors: " + json.dumps(r["node_errors"])[:3000])
+            pid = r["prompt_id"]
+            print(f"[run] queued prompt {pid} (iteration {it})", flush=True)
+            hist, last_print = None, 0
+            while hist is None:
+                if proc.poll() is not None:
+                    raise RuntimeError(f"ComfyUI died mid-run (code {proc.returncode})")
+                if time.perf_counter() - t_sub > a.timeout:
+                    http(port, "/interrupt", {})
+                    raise TimeoutError(f"prompt did not finish in {a.timeout}s")
+                h = http(port, f"/history/{pid}")
+                hist = h.get(pid)
+                if hist is None:
+                    time.sleep(1)
+                    if time.time() - last_print > 60:
+                        last_print = time.time()
+                        prog = [d for _, ty, d in events if ty == "progress"]
+                        print(f"[run] {time.perf_counter() - t_sub:6.0f} s  running; last progress {prog[-1] if prog else '-'}", flush=True)
+            time.sleep(0.5)  # let the final ws frames land
+            wall = time.perf_counter() - t_sub
+            if hist["status"]["status_str"] != "success":
+                raise RuntimeError("execution failed: " + json.dumps(hist["status"]["messages"])[-3000:])
+            report_timing(events, graph, os.path.join(out, f"timing_{a.variant}{'' if it == 0 else '_' + str(it)}.json"))
+            print(f"  iteration {it}: wall time as seen by the harness: {wall:.1f} s;  GPU memory peak (nvidia-smi total, incl. desktop): {gpu_peak[0]} MiB")
+            vids = [os.path.join(out, "output", im.get("subfolder", ""), im["filename"]) for o in hist["outputs"].values() for im in o.get("images", [])]
+            vids = [v for v in vids if v.lower().endswith((".mp4", ".webm", ".mkv"))]
+            if not vids:
+                raise RuntimeError("no video in outputs: " + json.dumps(hist["outputs"])[:1000])
+            dst = os.path.join(out, f"result_{a.variant}{'' if it == 0 else '_' + str(it)}.mp4")
+            shutil.copyfile(vids[0], dst)
+            print(f"[run] OK -> {dst} ({os.path.getsize(dst) / 1e6:.2f} MB)")
+
+        for it in range(a.repeat):  # iterations > 0 change only the seed: the text encode is cached, models are warm
+            one_run(it)
         ok = True
     except BaseException as e:
         print(f"[run] FAILED: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
@@ -421,6 +431,7 @@ def main():
     r.add_argument("--steps", type=int, default=8)
     r.add_argument("--seed", type=int, default=42)
     r.add_argument("--prompt", default=DEFAULT_PROMPT)
+    r.add_argument("--repeat", type=int, default=1, help="queue the graph N times in one server session (seed + i), to measure warm re-runs")
     r.add_argument("--attention", choices=["exact", "int8_fast"], default="exact", help="fast variant only")
     r.add_argument("--out-dir", required=True)
     r.add_argument("--timeout", type=int, default=7200, help="max seconds for the prompt itself")

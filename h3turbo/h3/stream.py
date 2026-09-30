@@ -220,7 +220,10 @@ class StreamingProvider:
         elif pin_blocks is not None:
             want = max(0, min(len(S), pin_blocks))
         else:
-            want = plan_pinned_blocks(st, len(S), free_ram_bytes(), pin_fraction, headroom) if self._cuda else 0
+            avail = free_ram_bytes() if self._cuda else 0
+            self._plan_info = {"ram_available_gib": round(avail / _GIB, 2)}
+            want = plan_pinned_blocks(st, len(S), avail, pin_fraction, headroom) if self._cuda else 0
+        self._plan_info = {**getattr(self, "_plan_info", {}), "pinned_wanted": want}
         mode = "copy" if pin_mode == "stage" else pin_mode
         for b in S[:want]:
             t = None
@@ -244,7 +247,10 @@ class StreamingProvider:
                 self._kind[b] = "registered"
             self._host[b] = t
         rest = [b for b in S if b not in self._kind]
-        if rest and pin is not False and (pin is True or want > 0 or pin_mode == "stage"):
+        # A 2-buffer page-locked staging ring (2 blocks, ~0.44 GB for H3) is always worth it on CUDA: copies from pageable memory
+        # block the copy thread and barely overlap with compute (measured in ComfyUI with RAM nearly full: every block fell back
+        # to pageable and a 640x384x22 step went from 2.78 s to 3.82 s). Only pin=False opts out.
+        if rest and pin is not False and (pin is True or want > 0 or pin_mode == "stage" or (pin == "auto" and self._cuda)):
             for _ in range(2):
                 t = self._pin_buffer()
                 if t is None:
@@ -470,7 +476,8 @@ class StreamingProvider:
                 kinds[k] = kinds.get(k, 0) + 1
             blk = self.store.block_nbytes
             return dict(self._st, resident=len(self._resident), streamed=len(self._streamed), slots=len(self._slots), host_kinds=kinds,
-                        gpu_bytes=(len(self._resident) + len(self._slots)) * blk, locked_host_bytes=(len(self._reg_ptrs)) * blk, state=self._dump())
+                        gpu_bytes=(len(self._resident) + len(self._slots)) * blk, locked_host_bytes=(len(self._reg_ptrs)) * blk,
+                        plan=dict(getattr(self, "_plan_info", {})), state=self._dump())
 
     def reset_stats(self) -> None:
         with self._cv:

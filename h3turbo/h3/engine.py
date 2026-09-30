@@ -46,7 +46,7 @@ class H3Engine:
     @classmethod
     def from_store(cls, store: H3TFile, device: Optional[str] = None, *, owns_store: bool = False, resident="auto",
                    precision: str = "a8", backend: str = "auto", reserve_gb: float = 1.5, free_vram_bytes: Optional[int] = None,
-                   prefetch: int = 2, ring: int = 3, pin="auto", mlp_chunk: Optional[int] = None,
+                   prefetch: int = 2, ring: int = 3, pin="auto", pin_mode: str = "auto", mlp_chunk: Optional[int] = None,
                    attn_chunk: Optional[int] = None, refiner_on_gpu: bool = False, **model_kw) -> "H3Engine":
         """Build provider + model over an open store. `free_vram_bytes` overrides the measured free VRAM (a host such as ComfyUI
         hands the model a budget); `reserve_gb` is then still subtracted for activations."""
@@ -54,7 +54,7 @@ class H3Engine:
         provider = None
         try:
             glob = store.load_globals(dev, refiner_device=dev if refiner_on_gpu else "cpu")
-            provider = StreamingProvider(store, dev, resident=resident, prefetch=prefetch, pin=pin, ring=ring,
+            provider = StreamingProvider(store, dev, resident=resident, prefetch=prefetch, pin=pin, pin_mode=pin_mode, ring=ring,
                                          reserve_bytes=int(reserve_gb * _GIB), free_vram_bytes=free_vram_bytes)
             model = H3Model(store.cfg, glob, provider, device=dev, backend=backend, precision=precision,
                             mlp_chunk=mlp_chunk, attn_chunk=attn_chunk, **model_kw)

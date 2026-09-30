@@ -389,3 +389,22 @@ def test_provider_works_when_built_inside_inference_mode(store, build_in_inferen
         assert no_slot_held(p)
     finally:
         p.close()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="page-locked staging needs CUDA")
+def test_low_ram_uses_a_pinned_staging_ring_not_pageable_copies(store):
+    """With no RAM to page-lock blocks (pin_blocks=0 stands in for a nearly full RAM), streamed blocks must still go through
+    the 2-buffer pinned staging ring: pageable copies barely overlap with compute (4.43 s vs 3.06 s per 640x384x22 H3 forward)."""
+    p = StreamingProvider(store, "cuda", resident=1, ring=2, prefetch=1, pin="auto", pin_blocks=0, wait_timeout=20)
+    try:
+        kinds = p.stats()["host_kinds"]
+        assert set(kinds) == {"staged"} and kinds["staged"] == LAYERS - 1, kinds
+        for _ in range(2):
+            forward(p, store)
+    finally:
+        p.close()
+    q = StreamingProvider(store, "cuda", resident=1, ring=2, prefetch=1, pin=False, wait_timeout=20)
+    try:
+        assert set(q.stats()["host_kinds"]) == {"pageable"}  # pin=False is still the explicit opt-out
+    finally:
+        q.close()
