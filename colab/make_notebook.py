@@ -84,10 +84,15 @@ nodes = f"{COMFY}/custom_nodes"
 if not os.path.isdir(f"{nodes}/ComfyUI-GGUF"):
     sh(f"git clone --depth 1 https://github.com/city96/ComfyUI-GGUF {nodes}/ComfyUI-GGUF")
 sh(f"pip install -q -r {nodes}/ComfyUI-GGUF/requirements.txt")
-if not os.path.isdir(f"{nodes}/MiniMax-H3-Turbo"):
-    tok = secret("GITHUB_TOKEN")
-    url = H3_REPO.replace("https://", f"https://x-access-token:{tok}@") if tok else H3_REPO
-    sh(f"git clone --depth 1 --branch {H3_BRANCH} {url} {nodes}/MiniMax-H3-Turbo", secret=tok)
+tok = secret("GITHUB_TOKEN")
+url = H3_REPO.replace("https://", f"https://x-access-token:{tok}@") if tok else H3_REPO
+h3 = f"{nodes}/MiniMax-H3-Turbo"
+if not os.path.isdir(h3):
+    sh(f"git clone --depth 1 --branch {H3_BRANCH} {url} {h3}", secret=tok)
+else:  # always update to the latest code of the branch (re-running this cell picks up fixes)
+    sh(f"git -C {h3} fetch --depth 1 {url} {H3_BRANCH} && git -C {h3} reset --hard FETCH_HEAD", secret=tok)
+sh(f"git -C {h3} remote set-url origin {H3_REPO}")  # never leave the token in .git/config
+print(sh(f"git -C {h3} log -1 --format='H3-Turbo at %h %s'"))
 sh("pip install -q psutil av huggingface_hub safetensors")
 print(sh(f"{sys.executable} -c \\"import torch;print('torch', torch.__version__, 'cuda', torch.version.cuda, torch.cuda.get_device_name())\\""))"""),
     (CODE, """#@title 4. Download the models (text encoder 8.5 GB, VAEs 5.8 GB, your model 12.5 GB)
@@ -120,8 +125,11 @@ if not os.path.exists(dst):
 H3T_NAME = h3t
 print("model:", dst, round(os.path.getsize(dst) / 1e9, 2), "GB")"""),
     (CODE, """#@title 5. Start ComfyUI (headless; keep it running between generations so models stay loaded)
-import sys
-sys.path.insert(0, f"{COMFY}/custom_nodes/MiniMax-H3-Turbo/colab")
+import os, sys
+_helper = f"{COMFY}/custom_nodes/MiniMax-H3-Turbo/colab"
+if not os.path.exists(f"{_helper}/h3_colab.py"):
+    raise RuntimeError("The H3-Turbo code in custom_nodes is older than this notebook. Re-run step 3 (it updates the clone).")
+sys.path.insert(0, _helper)
 from h3_colab import ComfyServer, generate, show
 try:
     srv.stop()
