@@ -380,6 +380,8 @@ class StreamingProvider:
             raise RuntimeError("StreamingProvider is closed")
         if i in self._resident:
             return self._resident[i][1]
+        if not self._slots:
+            raise RuntimeError("H3 streaming provider is parked (it holds no device memory); resize() it before a forward")
         t0 = time.perf_counter()
         deadline = t0 + self._timeout
         waited = False
@@ -447,6 +449,110 @@ class StreamingProvider:
                     s.state, s.done = IDLE, ev
             self._pos, self._demand, self._in_forward = -1, None, False
             self._cv.notify_all()
+
+    # ------------------------------------------------------------------ dynamic residency (between forwards)
+    def device_bytes(self) -> int:
+        return (len(self._resident) + len(self._slots)) * self.store.block_nbytes
+
+    def _stop_worker(self) -> None:
+        if self._thread is None:
+            return
+        with self._cv:
+            self._stop = True
+            self._cv.notify_all()
+        if self._thread is not threading.current_thread():
+            self._thread.join(timeout=120)
+        self._thread, self._stop = None, False
+
+    def _lock_host(self, b: int, headroom: int) -> bool:
+        """Page-lock block b's file pages in place (zero copy) if RAM allows; True when b now has a page-locked source."""
+        if not self._cuda or self._kind.get(b) in ("registered", "pinned"):
+            return self._kind.get(b) in ("registered", "pinned")
+        try:
+            if free_ram_bytes() - self.store.block_nbytes < headroom:
+                return False
+        except RuntimeError:
+            return False
+        view = self.store.block_tensor(b)
+        if not _cuda_ok(torch.cuda.cudart().cudaHostRegister(view.data_ptr(), view.numel(), _HOST_REGISTER_READ_ONLY)):
+            _clear_cuda_error(self.device)
+            return False
+        self._reg_ptrs.append(view.data_ptr())
+        self._host[b], self._kind[b] = view, "registered"
+        return True
+
+    def resize(self, resident: int, ring: int = 3, *, lock_host: bool = True, ram_headroom_bytes: int = 3 * _GIB) -> int:
+        """Change how many leading blocks live on the device and how many ring slots exist, keeping the host side
+        (page-locked file pages, pinned copies, staging buffers) so nothing is re-read from disk afterwards.
+
+        Only between forwards. resize(0, 0) parks the provider: it holds no device memory and acquire() of a streamed
+        block raises until the next resize. With lock_host, blocks that leave the device (and streamed blocks without a
+        page-locked source) get their file pages page-locked while free RAM stays above `ram_headroom_bytes`, so the OS
+        cannot evict them while the GPU is lent to the VAE or the text encoder. Returns the device bytes now held."""
+        if self._closed:
+            raise RuntimeError("StreamingProvider is closed")
+        if self._in_forward:
+            raise RuntimeError("resize() during a forward")
+        self._stop_worker()
+        if self._cuda:
+            torch.cuda.synchronize(self.device)  # copies into slots / out of staging buffers must be finished
+        n, blk = self.n_blocks, self.store.block_nbytes
+        resident = max(0, min(int(resident), n))
+        with self._cv:
+            self._slots, self._by_block = [], {}
+            self._pos, self._demand = -1, None
+        for b in sorted(self._resident, reverse=True):
+            if b >= resident:
+                if lock_host:
+                    self._lock_host(b, ram_headroom_bytes)
+                del self._resident[b]
+        if self._cuda:
+            torch.cuda.empty_cache()
+        for b in range(resident):
+            if b in self._resident:
+                continue
+            try:
+                buf = self._alloc()
+            except torch.cuda.OutOfMemoryError:
+                resident = b
+                break
+            src = self._host.get(b)
+            buf.copy_(src if src is not None else self.store.block_tensor(b))
+            self._resident[b] = (buf, self.store.block_weights_from(buf))
+        for b in [b for b in self._resident if b >= resident]:  # an OOM above cut the prefix short
+            del self._resident[b]
+        self._streamed = list(range(resident, n))
+        if self._streamed:
+            if lock_host:
+                for b in self._streamed:
+                    if not self._lock_host(b, ram_headroom_bytes):
+                        break
+            if not self._staging and self._cuda and any(self._kind.get(b) not in ("registered", "pinned") for b in self._streamed):
+                for _ in range(2):
+                    t = self._pin_buffer()
+                    if t is None:
+                        break
+                    self._staging.append(t)
+                self._stage_ev = [None] * len(self._staging)
+            for b in self._streamed:
+                if self._kind.get(b) not in ("registered", "pinned"):
+                    self._kind[b] = "staged" if self._staging else "pageable"
+            for k in range(min(max(0, ring), len(self._streamed))):
+                try:
+                    buf = self._alloc()
+                except torch.cuda.OutOfMemoryError as e:
+                    if k:
+                        break
+                    raise torch.cuda.OutOfMemoryError(f"cannot allocate a streaming slot ({blk / 2**20:.0f} MiB)") from e
+                self._slots.append(_Slot(k, buf, self.store.block_weights_from(buf)))
+            if self._slots:
+                self._thread = threading.Thread(target=self._run, name="h3-stream", daemon=True)
+                self._thread.start()
+        return self.device_bytes()
+
+    @property
+    def parked(self) -> bool:
+        return bool(self._streamed) and not self._slots
 
     # ------------------------------------------------------------------ introspection / lifecycle
     def buffer_of(self, i: int) -> Optional[torch.Tensor]:

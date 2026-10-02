@@ -93,14 +93,30 @@ class H3TurboDiT(torch.nn.Module):
         e = self.engine
         return e.gpu_bytes() if e is not None else 0
 
+    def _resident_for(self, budget: int) -> int:
+        from h3turbo.h3.stream import _CUDA_MARGIN, plan_residency
+
+        if self.resident_blocks:
+            return int(self.resident_blocks)
+        return plan_residency(self.store, budget, int(0.25 * 2**30) + _CUDA_MARGIN, 3)
+
     def ensure_loaded(self, budget=None) -> int:
-        """Build the engine inside `budget` bytes of VRAM (default: what is free now). Returns bytes newly placed on the GPU."""
+        """Build the engine inside `budget` bytes of VRAM (default: what is free now), or bring a parked engine back onto
+        the GPU from its page-locked host copies. Returns bytes newly placed on the GPU."""
         with self._lock:
-            if self.engine is not None:
-                return 0
             dev = mm.get_torch_device()
             free = int(mm.get_free_memory(dev))
             budget = free if budget is None else int(min(max(budget, _MIN_BUDGET), free))
+            if self.engine is not None:
+                p = self.engine.provider
+                if not p.parked:
+                    return 0
+                before = p.device_bytes()
+                p.resize(self._resident_for(budget + before), 3)
+                st = p.stats()
+                LOG.info("H3-Turbo engine back on GPU: %d/%d blocks resident, %d streamed (budget %.2f GiB, %s host copies)",
+                         st.get("resident", 0), self.cfg.layers, st.get("streamed", 0), budget / 2**30, st.get("host_kinds"))
+                return p.device_bytes() - before
             e = H3Engine.from_store(self.store, str(dev), owns_store=False, precision=self.precision,
                                     resident="auto" if not self.resident_blocks else self.resident_blocks,
                                     reserve_gb=0.25, free_vram_bytes=budget, attn_impl=self.attn_impl,
@@ -113,7 +129,45 @@ class H3TurboDiT(torch.nn.Module):
             return e.gpu_bytes()
 
     def unload(self) -> int:
-        """Free every byte the engine holds on the GPU (and its page-locked host ranges); the file stays mapped."""
+        """Park the engine: free its block memory on the GPU but keep the host side (page-locked file pages, staging
+        buffers) and the small globals, so the next sampling run re-uploads from RAM instead of re-reading the disk."""
+        with self._lock:
+            e = self.engine
+            if e is None:
+                return 0
+            before = e.provider.device_bytes()
+            try:
+                e.provider.resize(0, 0)
+            except Exception as err:  # never leave VRAM pinned because parking failed: fall back to a full close
+                LOG.warning("H3-Turbo engine: parking failed (%r); closing it", err)
+                return self.close_engine()
+            freed = before - e.provider.device_bytes()
+            st = e.provider.stats()
+        LOG.info("H3-Turbo engine parked (%.2f GiB of VRAM released; %.2f GiB of weights kept page-locked in RAM)",
+                 freed / 2**30, st.get("locked_host_bytes", 0) / 2**30)
+        return freed
+
+    def shrink(self, memory_to_free: int) -> int:
+        """Give ComfyUI back at least `memory_to_free` bytes of VRAM with the least damage: the streaming ring first, then
+        resident blocks from the top. The rest stays on the GPU for the next sampling run (no re-upload)."""
+        with self._lock:
+            e = self.engine
+            if e is None:
+                return 0
+            p, blk = e.provider, self.store.block_nbytes
+            before, ring_bytes, r = p.device_bytes(), len(p._slots) * blk, len(p._resident)
+            keep = r if memory_to_free <= ring_bytes else max(0, r - -(-(memory_to_free - ring_bytes) // blk))
+            try:
+                p.resize(keep, 0)
+            except Exception as err:
+                LOG.warning("H3-Turbo engine: shrink failed (%r); closing it", err)
+                return self.close_engine()
+            freed = before - p.device_bytes()
+        LOG.info("H3-Turbo engine shrunk for another model: %.2f GiB of VRAM released, %d blocks stay on the GPU", freed / 2**30, keep)
+        return freed
+
+    def close_engine(self) -> int:
+        """Free everything the engine holds (VRAM and page-locked RAM); the file stays mapped."""
         with self._lock:
             e, self.engine = self.engine, None
             if e is None:
@@ -124,11 +178,11 @@ class H3TurboDiT(torch.nn.Module):
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        LOG.info("H3-Turbo engine unloaded (%.2f GiB of VRAM released)", freed / 2**30)
+        LOG.info("H3-Turbo engine closed (%.2f GiB of VRAM released)", freed / 2**30)
         return freed
 
     def close(self) -> None:
-        self.unload()
+        self.close_engine()
         self.store.close()
 
     # ------------------------------------------------------------------ what the sampler calls
@@ -218,8 +272,12 @@ class H3TurboPatcher(comfy.model_patcher.ModelPatcher):
             return placed
 
     def partially_unload(self, device_to, memory_to_free=0, force_patch_weights=False):
-        freed = self._dit().unload()
-        self.model.model_loaded_weight_memory = 0
+        dit = self._dit()
+        if memory_to_free and memory_to_free < dit.gpu_bytes():
+            freed = dit.shrink(int(memory_to_free))  # keep what ComfyUI does not need on the GPU for the next run
+        else:
+            freed = dit.unload()
+        self.model.model_loaded_weight_memory = dit.gpu_bytes()
         return freed
 
     def detach(self, unpatch_all=True):

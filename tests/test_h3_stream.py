@@ -408,3 +408,37 @@ def test_low_ram_uses_a_pinned_staging_ring_not_pageable_copies(store):
         assert set(q.stats()["host_kinds"]) == {"pageable"}  # pin=False is still the explicit opt-out
     finally:
         q.close()
+
+
+# ------------------------------------------------------------------ resize / park (ComfyUI lends the GPU to the VAE between runs)
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("plan", [[(2, 3), (0, 0), (2, 3)], [(3, 2), (1, 0), (4, 3), (6, 3)], [(6, 0), (0, 0), (0, 1)], [(1, 3), (5, 2), (0, 0), (3, 3)]])
+def test_resize_keeps_every_block_exact(store, device, plan):
+    with StreamingProvider(store, device, resident=plan[0][0], prefetch=2, ring=max(1, plan[0][1]), pin="auto") as p:
+        forward(p, store)
+        for resident, ring in plan[1:]:
+            held = p.resize(resident, ring)
+            assert held == p.device_bytes() == (resident + min(ring, LAYERS - resident)) * store.block_nbytes
+            assert p.stats()["resident"] == resident
+            if resident < LAYERS and ring == 0:
+                assert p.parked
+                with pytest.raises(RuntimeError, match="parked"):
+                    p.acquire(resident)
+                p.end_forward()
+                continue
+            assert not p.parked
+            for _ in range(2):
+                forward(p, store)
+                assert no_slot_held(p)
+
+
+def test_resize_refuses_during_a_forward(store):
+    with StreamingProvider(store, "cpu", resident=1, ring=2, pin=False) as p:
+        p.begin_forward()
+        with pytest.raises(RuntimeError, match="during a forward"):
+            p.resize(0, 0)
+        p.end_forward()
+        p.resize(0, 0)
+        p.close()
+        with pytest.raises(RuntimeError, match="closed"):
+            p.resize(1, 1)
