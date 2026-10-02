@@ -1,0 +1,310 @@
+{
+ "1": {
+  "inputs": {
+   "h3t_name": "minimax_h3_fused_refdelta_r1024_turbo8_mystic07_w4a8_convrot.h3t",
+   "precision": "a8",
+   "resident_blocks": 0,
+   "mlp_chunk": 0,
+   "attention": "exact"
+  },
+  "class_type": "H3TurboFastUNetLoader",
+  "_meta": {
+   "title": "H3-Turbo Fast UNET Loader (your turbo8 W4A8 model)"
+  }
+ },
+ "2": {
+  "inputs": {
+   "clip_name": "qwen3vl-32B-MiniMax-H3-Q2_K.gguf",
+   "release": "auto",
+   "cache": true
+  },
+  "class_type": "H3TurboCachedTextEncoder",
+  "_meta": {
+   "title": "H3-Turbo Cached Text Encoder (Qwen3-VL Q2_K)"
+  }
+ },
+ "3": {
+  "inputs": {
+   "vae_name": "minimax_h3_video_vae_fp16.safetensors"
+  },
+  "class_type": "VAELoader",
+  "_meta": {
+   "title": "Load VAE (video, fp16)"
+  }
+ },
+ "4": {
+  "inputs": {
+   "vae_name": "minimax_h3_audio_vae_fp32.safetensors"
+  },
+  "class_type": "VAELoader",
+  "_meta": {
+   "title": "Load VAE (audio, fp32)"
+  }
+ },
+ "5": {
+  "inputs": {
+   "image": "example.png"
+  },
+  "class_type": "LoadImage",
+  "_meta": {
+   "title": "Reference image 1 = <Picture 1>"
+  }
+ },
+ "6": {
+  "inputs": {
+   "image": "example.png"
+  },
+  "class_type": "LoadImage",
+  "_meta": {
+   "title": "Reference image 2 = <Picture 2> (Ctrl+B to use)"
+  }
+ },
+ "7": {
+  "inputs": {
+   "image": "example.png"
+  },
+  "class_type": "LoadImage",
+  "_meta": {
+   "title": "Reference image 3 = <Picture 3> (Ctrl+B to use)"
+  }
+ },
+ "8": {
+  "inputs": {
+   "file": "h3_example_ref_video.mp4"
+  },
+  "class_type": "LoadVideo",
+  "_meta": {
+   "title": "Load Video = <Video 1> (Ctrl+B to use)"
+  }
+ },
+ "9": {
+  "inputs": {
+   "start_time": 0.0,
+   "duration": 2.0,
+   "strict_duration": false,
+   "video": [
+    "8",
+    0
+   ]
+  },
+  "class_type": "Video Slice",
+  "_meta": {
+   "title": "Video Slice (first 2 s)"
+  }
+ },
+ "10": {
+  "inputs": {
+   "video": [
+    "9",
+    0
+   ]
+  },
+  "class_type": "GetVideoComponents",
+  "_meta": {
+   "title": "Get Video Components"
+  }
+ },
+ "11": {
+  "inputs": {
+   "audio": "h3_example_ref_audio.wav"
+  },
+  "class_type": "LoadAudio",
+  "_meta": {
+   "title": "Load Audio = <Audio 1> (Ctrl+B to use)"
+  }
+ },
+ "12": {
+  "inputs": {
+   "prompt": "<Subject 1> is the cartoon girl in <Picture 1>: big yellow hair, round blue eyes, pink dress, drawn in the same simple crayon style as <Picture 1>. <Subject 1> waves at the camera, smiles and spins around once on the green hill under the blue sky with white clouds, her hair bouncing. Gentle camera push-in. Audio: <Subject 1> laughs and says \"Hello!\" in a cheerful child's voice, soft wind, birds chirping.",
+   "width": 640,
+   "height": 384,
+   "length": 22,
+   "ref_image_size": "match",
+   "clip": [
+    "2",
+    0
+   ],
+   "vae": [
+    "3",
+    0
+   ],
+   "audio_vae": [
+    "4",
+    0
+   ],
+   "ref_images.ref_image_0": [
+    "5",
+    0
+   ],
+   "ref_images.ref_image_1": [
+    "6",
+    0
+   ],
+   "ref_images.ref_image_2": [
+    "7",
+    0
+   ],
+   "ref_videos.ref_video_0": [
+    "10",
+    0
+   ],
+   "ref_video_audios.ref_video_audio_0": [
+    "10",
+    1
+   ],
+   "ref_audios.ref_audio_0": [
+    "11",
+    0
+   ]
+  },
+  "class_type": "MiniMaxH3ReferenceToVideo",
+  "_meta": {
+   "title": "MiniMaxH3ReferenceToVideo"
+  }
+ },
+ "13": {
+  "inputs": {
+   "noise_seed": 42
+  },
+  "class_type": "RandomNoise",
+  "_meta": {
+   "title": "RandomNoise"
+  }
+ },
+ "14": {
+  "inputs": {
+   "sampler_name": "res_multistep"
+  },
+  "class_type": "KSamplerSelect",
+  "_meta": {
+   "title": "KSamplerSelect"
+  }
+ },
+ "15": {
+  "inputs": {
+   "scheduler": "simple",
+   "steps": 8,
+   "denoise": 1.0,
+   "model": [
+    "1",
+    0
+   ]
+  },
+  "class_type": "BasicScheduler",
+  "_meta": {
+   "title": "BasicScheduler"
+  }
+ },
+ "16": {
+  "inputs": {
+   "model": [
+    "1",
+    0
+   ],
+   "conditioning": [
+    "12",
+    0
+   ]
+  },
+  "class_type": "BasicGuider",
+  "_meta": {
+   "title": "BasicGuider"
+  }
+ },
+ "17": {
+  "inputs": {
+   "noise": [
+    "13",
+    0
+   ],
+   "guider": [
+    "16",
+    0
+   ],
+   "sampler": [
+    "14",
+    0
+   ],
+   "sigmas": [
+    "15",
+    0
+   ],
+   "latent_image": [
+    "12",
+    1
+   ]
+  },
+  "class_type": "SamplerCustomAdvanced",
+  "_meta": {
+   "title": "SamplerCustomAdvanced"
+  }
+ },
+ "18": {
+  "inputs": {
+   "samples": [
+    "17",
+    0
+   ],
+   "vae": [
+    "3",
+    0
+   ]
+  },
+  "class_type": "VAEDecode",
+  "_meta": {
+   "title": "VAE Decode (video)"
+  }
+ },
+ "19": {
+  "inputs": {
+   "samples": [
+    "17",
+    0
+   ],
+   "vae": [
+    "4",
+    0
+   ]
+  },
+  "class_type": "VAEDecodeAudio",
+  "_meta": {
+   "title": "VAE Decode Audio"
+  }
+ },
+ "20": {
+  "inputs": {
+   "fps": 24.0,
+   "bit_depth": "auto",
+   "color_space": "sRGB",
+   "codec": "none",
+   "images": [
+    "18",
+    0
+   ],
+   "audio": [
+    "19",
+    0
+   ]
+  },
+  "class_type": "CreateVideo",
+  "_meta": {
+   "title": "CreateVideo"
+  }
+ },
+ "21": {
+  "inputs": {
+   "filename_prefix": "video/MiniMaxH3_omni",
+   "format": "auto",
+   "format.codec": "auto",
+   "codec": "auto",
+   "video": [
+    "20",
+    0
+   ]
+  },
+  "class_type": "SaveVideo",
+  "_meta": {
+   "title": "SaveVideo"
+  }
+ }
+}

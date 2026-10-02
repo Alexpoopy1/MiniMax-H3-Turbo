@@ -29,6 +29,14 @@ if __package__:  # loaded by ComfyUI as a package
         import logging
 
         logging.getLogger("h3turbo").warning("H3-Turbo Cached Text Encoder unavailable: %r", e)
+    try:  # keep the H3 video VAE's weights page-locked so decodes upload them by DMA
+        from .comfy_h3_vae import install as _install_vae_lock
+
+        _install_vae_lock()
+    except Exception as e:  # pragma: no cover
+        import logging
+
+        logging.getLogger("h3turbo").warning("H3-Turbo VAE lock unavailable: %r", e)
     try:  # opt-in decode timing log (an empty file named PROFILE next to this file enables it)
         from . import comfy_h3_profile  # noqa: F401
     except Exception:  # pragma: no cover

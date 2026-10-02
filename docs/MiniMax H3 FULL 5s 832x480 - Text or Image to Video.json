@@ -1,0 +1,964 @@
+{
+ "id": "5dd34a45-e64e-4063-a2cf-bbcd31b51d66",
+ "revision": 0,
+ "last_node_id": 17,
+ "last_link_id": 19,
+ "nodes": [
+  {
+   "id": 1,
+   "type": "H3TurboFastUNetLoader",
+   "pos": [
+    0,
+    0
+   ],
+   "size": [
+    420,
+    200
+   ],
+   "flags": {},
+   "order": 0,
+   "mode": 0,
+   "inputs": [],
+   "outputs": [
+    {
+     "name": "MODEL",
+     "type": "MODEL",
+     "links": [
+      5,
+      6
+     ]
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "H3TurboFastUNetLoader"
+   },
+   "widgets_values": [
+    "minimax_h3_fused_refdelta_r1024_turbo8_mystic07_w4a8_convrot.h3t",
+    "a8",
+    0,
+    0,
+    "exact"
+   ],
+   "widgets_values_named": {
+    "h3t_name": "minimax_h3_fused_refdelta_r1024_turbo8_mystic07_w4a8_convrot.h3t",
+    "precision": "a8",
+    "resident_blocks": 0,
+    "mlp_chunk": 0,
+    "attention": "exact"
+   },
+   "title": "H3-Turbo Fast UNET Loader (your turbo8 W4A8 model)"
+  },
+  {
+   "id": 2,
+   "type": "H3TurboCachedTextEncoder",
+   "pos": [
+    0,
+    240
+   ],
+   "size": [
+    420,
+    130
+   ],
+   "flags": {},
+   "order": 1,
+   "mode": 0,
+   "inputs": [],
+   "outputs": [
+    {
+     "name": "CLIP",
+     "type": "CLIP",
+     "links": [
+      1
+     ]
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "H3TurboCachedTextEncoder"
+   },
+   "widgets_values": [
+    "qwen3vl-32B-MiniMax-H3-Q2_K.gguf",
+    "auto",
+    true
+   ],
+   "widgets_values_named": {
+    "clip_name": "qwen3vl-32B-MiniMax-H3-Q2_K.gguf",
+    "release": "auto",
+    "cache": true
+   },
+   "title": "H3-Turbo Cached Text Encoder (Qwen3-VL Q2_K)"
+  },
+  {
+   "id": 3,
+   "type": "VAELoader",
+   "pos": [
+    0,
+    410
+   ],
+   "size": [
+    420,
+    60
+   ],
+   "flags": {},
+   "order": 2,
+   "mode": 0,
+   "inputs": [],
+   "outputs": [
+    {
+     "name": "VAE",
+     "type": "VAE",
+     "links": [
+      2,
+      14
+     ]
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "VAELoader",
+    "cnr_id": "comfy-core"
+   },
+   "widgets_values": [
+    "minimax_h3_video_vae_fp16.safetensors"
+   ],
+   "widgets_values_named": {
+    "vae_name": "minimax_h3_video_vae_fp16.safetensors"
+   },
+   "title": "Load VAE (video, fp16)"
+  },
+  {
+   "id": 4,
+   "type": "VAELoader",
+   "pos": [
+    0,
+    510
+   ],
+   "size": [
+    420,
+    60
+   ],
+   "flags": {},
+   "order": 3,
+   "mode": 0,
+   "inputs": [],
+   "outputs": [
+    {
+     "name": "VAE",
+     "type": "VAE",
+     "links": [
+      16
+     ]
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "VAELoader",
+    "cnr_id": "comfy-core"
+   },
+   "widgets_values": [
+    "minimax_h3_audio_vae_fp32.safetensors"
+   ],
+   "widgets_values_named": {
+    "vae_name": "minimax_h3_audio_vae_fp32.safetensors"
+   },
+   "title": "Load VAE (audio, fp32)"
+  },
+  {
+   "id": 5,
+   "type": "LoadImage",
+   "pos": [
+    500,
+    0
+   ],
+   "size": [
+    320,
+    360
+   ],
+   "flags": {},
+   "order": 4,
+   "mode": 4,
+   "inputs": [],
+   "outputs": [
+    {
+     "name": "IMAGE",
+     "type": "IMAGE",
+     "links": [
+      3
+     ]
+    },
+    {
+     "name": "MASK",
+     "type": "MASK",
+     "links": null
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "LoadImage",
+    "cnr_id": "comfy-core"
+   },
+   "widgets_values": [
+    "example.png",
+    "image"
+   ],
+   "widgets_values_named": {
+    "image": "example.png",
+    "upload": "image"
+   },
+   "title": "Load Image - FIRST frame (Ctrl+B to use)"
+  },
+  {
+   "id": 6,
+   "type": "LoadImage",
+   "pos": [
+    500,
+    400
+   ],
+   "size": [
+    320,
+    360
+   ],
+   "flags": {},
+   "order": 5,
+   "mode": 4,
+   "inputs": [],
+   "outputs": [
+    {
+     "name": "IMAGE",
+     "type": "IMAGE",
+     "links": [
+      4
+     ]
+    },
+    {
+     "name": "MASK",
+     "type": "MASK",
+     "links": null
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "LoadImage",
+    "cnr_id": "comfy-core"
+   },
+   "widgets_values": [
+    "example.png",
+    "image"
+   ],
+   "widgets_values_named": {
+    "image": "example.png",
+    "upload": "image"
+   },
+   "title": "Load Image - LAST frame (Ctrl+B to use)"
+  },
+  {
+   "id": 7,
+   "type": "MiniMaxH3ImageToVideo",
+   "pos": [
+    860,
+    0
+   ],
+   "size": [
+    460,
+    520
+   ],
+   "flags": {},
+   "order": 9,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "clip",
+     "type": "CLIP",
+     "link": 1
+    },
+    {
+     "name": "vae",
+     "type": "VAE",
+     "link": 2
+    },
+    {
+     "name": "first_frame",
+     "type": "IMAGE",
+     "link": 3,
+     "shape": 7
+    },
+    {
+     "name": "last_frame",
+     "type": "IMAGE",
+     "link": 4,
+     "shape": 7
+    }
+   ],
+   "outputs": [
+    {
+     "name": "positive",
+     "type": "CONDITIONING",
+     "links": [
+      7
+     ]
+    },
+    {
+     "name": "LATENT",
+     "type": "LATENT",
+     "links": [
+      12
+     ]
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "MiniMaxH3ImageToVideo",
+    "cnr_id": "comfy-core"
+   },
+   "widgets_values": [
+    "A golden retriever puppy runs across a sunny meadow toward the camera, ears flapping, tall grass swaying, warm late-afternoon light, shallow depth of field, smooth tracking shot, cinematic. Audio: happy panting, paws on grass, birdsong, a light breeze.",
+    832,
+    480,
+    124
+   ],
+   "widgets_values_named": {
+    "prompt": "A golden retriever puppy runs across a sunny meadow toward the camera, ears flapping, tall grass swaying, warm late-afternoon light, shallow depth of field, smooth tracking shot, cinematic. Audio: happy panting, paws on grass, birdsong, a light breeze.",
+    "width": 832,
+    "height": 480,
+    "length": 124
+   }
+  },
+  {
+   "id": 8,
+   "type": "RandomNoise",
+   "pos": [
+    1400,
+    0
+   ],
+   "size": [
+    320,
+    110
+   ],
+   "flags": {},
+   "order": 6,
+   "mode": 0,
+   "inputs": [],
+   "outputs": [
+    {
+     "name": "NOISE",
+     "type": "NOISE",
+     "links": [
+      8
+     ]
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "RandomNoise",
+    "cnr_id": "comfy-core"
+   },
+   "widgets_values": [
+    42,
+    "randomize"
+   ],
+   "widgets_values_named": {
+    "noise_seed": 42,
+    "control_after_generate": "randomize"
+   }
+  },
+  {
+   "id": 9,
+   "type": "KSamplerSelect",
+   "pos": [
+    1400,
+    150
+   ],
+   "size": [
+    320,
+    60
+   ],
+   "flags": {},
+   "order": 7,
+   "mode": 0,
+   "inputs": [],
+   "outputs": [
+    {
+     "name": "SAMPLER",
+     "type": "SAMPLER",
+     "links": [
+      10
+     ]
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "KSamplerSelect",
+    "cnr_id": "comfy-core"
+   },
+   "widgets_values": [
+    "res_multistep"
+   ],
+   "widgets_values_named": {
+    "sampler_name": "res_multistep"
+   }
+  },
+  {
+   "id": 10,
+   "type": "BasicScheduler",
+   "pos": [
+    1400,
+    250
+   ],
+   "size": [
+    320,
+    110
+   ],
+   "flags": {},
+   "order": 10,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "model",
+     "type": "MODEL",
+     "link": 5
+    }
+   ],
+   "outputs": [
+    {
+     "name": "SIGMAS",
+     "type": "SIGMAS",
+     "links": [
+      11
+     ]
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "BasicScheduler",
+    "cnr_id": "comfy-core"
+   },
+   "widgets_values": [
+    "simple",
+    8,
+    1.0
+   ],
+   "widgets_values_named": {
+    "scheduler": "simple",
+    "steps": 8,
+    "denoise": 1.0
+   }
+  },
+  {
+   "id": 11,
+   "type": "BasicGuider",
+   "pos": [
+    1400,
+    400
+   ],
+   "size": [
+    320,
+    50
+   ],
+   "flags": {},
+   "order": 11,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "model",
+     "type": "MODEL",
+     "link": 6
+    },
+    {
+     "name": "conditioning",
+     "type": "CONDITIONING",
+     "link": 7
+    }
+   ],
+   "outputs": [
+    {
+     "name": "GUIDER",
+     "type": "GUIDER",
+     "links": [
+      9
+     ]
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "BasicGuider",
+    "cnr_id": "comfy-core"
+   }
+  },
+  {
+   "id": 12,
+   "type": "SamplerCustomAdvanced",
+   "pos": [
+    1760,
+    0
+   ],
+   "size": [
+    300,
+    330
+   ],
+   "flags": {},
+   "order": 12,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "noise",
+     "type": "NOISE",
+     "link": 8
+    },
+    {
+     "name": "guider",
+     "type": "GUIDER",
+     "link": 9
+    },
+    {
+     "name": "sampler",
+     "type": "SAMPLER",
+     "link": 10
+    },
+    {
+     "name": "sigmas",
+     "type": "SIGMAS",
+     "link": 11
+    },
+    {
+     "name": "latent_image",
+     "type": "LATENT",
+     "link": 12
+    }
+   ],
+   "outputs": [
+    {
+     "name": "output",
+     "type": "LATENT",
+     "links": [
+      13,
+      15
+     ]
+    },
+    {
+     "name": "denoised_output",
+     "type": "LATENT",
+     "links": null
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "SamplerCustomAdvanced",
+    "cnr_id": "comfy-core"
+   }
+  },
+  {
+   "id": 13,
+   "type": "VAEDecode",
+   "pos": [
+    2160,
+    0
+   ],
+   "size": [
+    260,
+    50
+   ],
+   "flags": {},
+   "order": 13,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "samples",
+     "type": "LATENT",
+     "link": 13
+    },
+    {
+     "name": "vae",
+     "type": "VAE",
+     "link": 14
+    }
+   ],
+   "outputs": [
+    {
+     "name": "IMAGE",
+     "type": "IMAGE",
+     "links": [
+      17
+     ]
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "VAEDecode",
+    "cnr_id": "comfy-core"
+   },
+   "title": "VAE Decode (video)"
+  },
+  {
+   "id": 14,
+   "type": "VAEDecodeAudio",
+   "pos": [
+    2160,
+    100
+   ],
+   "size": [
+    260,
+    50
+   ],
+   "flags": {},
+   "order": 14,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "samples",
+     "type": "LATENT",
+     "link": 15
+    },
+    {
+     "name": "vae",
+     "type": "VAE",
+     "link": 16
+    }
+   ],
+   "outputs": [
+    {
+     "name": "AUDIO",
+     "type": "AUDIO",
+     "links": [
+      18
+     ]
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "VAEDecodeAudio",
+    "cnr_id": "comfy-core"
+   },
+   "title": "VAE Decode Audio"
+  },
+  {
+   "id": 15,
+   "type": "CreateVideo",
+   "pos": [
+    2160,
+    200
+   ],
+   "size": [
+    300,
+    160
+   ],
+   "flags": {},
+   "order": 15,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "images",
+     "type": "IMAGE",
+     "link": 17
+    },
+    {
+     "name": "audio",
+     "type": "AUDIO",
+     "link": 18,
+     "shape": 7
+    }
+   ],
+   "outputs": [
+    {
+     "name": "VIDEO",
+     "type": "VIDEO",
+     "links": [
+      19
+     ]
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "CreateVideo",
+    "cnr_id": "comfy-core"
+   },
+   "widgets_values": [
+    24.0,
+    "auto",
+    "sRGB",
+    "none"
+   ],
+   "widgets_values_named": {
+    "fps": 24.0,
+    "bit_depth": "auto",
+    "color_space": "sRGB",
+    "codec": "none"
+   }
+  },
+  {
+   "id": 16,
+   "type": "SaveVideo",
+   "pos": [
+    2500,
+    0
+   ],
+   "size": [
+    520,
+    560
+   ],
+   "flags": {},
+   "order": 16,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "video",
+     "type": "VIDEO",
+     "link": 19
+    }
+   ],
+   "outputs": [
+    {
+     "name": "video",
+     "type": "VIDEO",
+     "links": null
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "SaveVideo",
+    "cnr_id": "comfy-core"
+   },
+   "widgets_values": [
+    "video/MiniMaxH3_full",
+    "auto",
+    "auto",
+    "auto"
+   ],
+   "widgets_values_named": {
+    "filename_prefix": "video/MiniMaxH3_full",
+    "format": "auto",
+    "format.codec": "auto",
+    "codec": "auto"
+   }
+  },
+  {
+   "id": 17,
+   "type": "MarkdownNote",
+   "pos": [
+    -620,
+    -60
+   ],
+   "size": [
+    560,
+    980
+   ],
+   "flags": {},
+   "order": 8,
+   "mode": 0,
+   "inputs": [],
+   "outputs": [],
+   "properties": {},
+   "widgets_values": [
+    "# MiniMax H3 FULL - 832x480, 124 frames (about 5.2 s), with sound\n\nSame model and settings as the FAST workflow (8 turbo steps, res_multistep / simple, cfg 1, exact attention); only the size and length are larger.\n\n## Speed on an RTX 3050 6 GB\n- **Expect roughly 6-7 minutes per video** (estimate for this card). This size is compute bound on a 6 GB card: there are many times more video tokens than in the 640x384 / 22-frame FAST workflow, and attention cost grows faster than the token count.\n- **~40 s is only possible locally for short clips** (use *MiniMax H3 FAST 40s*). For full-length clips at high speed use the Colab notebook on a **G4 GPU** (RTX PRO 6000, 96 GB: the whole model stays on the GPU).\n- A new prompt adds the text encoder (about 8-9 s from RAM, about 70 s from the hard disk); a repeated prompt is read from the cache.\n\n## Text / image to video\n- Text to video: type the prompt and press Run.\n- Image to video: select **Load Image - FIRST frame** (and/or LAST frame), press **Ctrl+B** to switch it on (it stops being purple), upload your picture. Refer to it as **`<Picture 1>`** / **`<Picture 2>`** in the prompt if you like. The first frame is stretched to 832x480, so use a 16:9-ish picture.\n\n## Keep it working\n- Close Chrome, games and other big apps: the model streams from RAM, and running out of RAM makes every step re-read the hard disk.\n- Length must be 5, 22, 39, 56, 73, 90, 107, 124, ... (17k + 5 frames at 24 fps).\n"
+   ],
+   "widgets_values_named": {
+    "text": "# MiniMax H3 FULL - 832x480, 124 frames (about 5.2 s), with sound\n\nSame model and settings as the FAST workflow (8 turbo steps, res_multistep / simple, cfg 1, exact attention); only the size and length are larger.\n\n## Speed on an RTX 3050 6 GB\n- **Expect roughly 6-7 minutes per video** (estimate for this card). This size is compute bound on a 6 GB card: there are many times more video tokens than in the 640x384 / 22-frame FAST workflow, and attention cost grows faster than the token count.\n- **~40 s is only possible locally for short clips** (use *MiniMax H3 FAST 40s*). For full-length clips at high speed use the Colab notebook on a **G4 GPU** (RTX PRO 6000, 96 GB: the whole model stays on the GPU).\n- A new prompt adds the text encoder (about 8-9 s from RAM, about 70 s from the hard disk); a repeated prompt is read from the cache.\n\n## Text / image to video\n- Text to video: type the prompt and press Run.\n- Image to video: select **Load Image - FIRST frame** (and/or LAST frame), press **Ctrl+B** to switch it on (it stops being purple), upload your picture. Refer to it as **`<Picture 1>`** / **`<Picture 2>`** in the prompt if you like. The first frame is stretched to 832x480, so use a 16:9-ish picture.\n\n## Keep it working\n- Close Chrome, games and other big apps: the model streams from RAM, and running out of RAM makes every step re-read the hard disk.\n- Length must be 5, 22, 39, 56, 73, 90, 107, 124, ... (17k + 5 frames at 24 fps).\n"
+   },
+   "title": "READ ME - how to use (speed, image to video)"
+  }
+ ],
+ "links": [
+  [
+   1,
+   2,
+   0,
+   7,
+   0,
+   "CLIP"
+  ],
+  [
+   2,
+   3,
+   0,
+   7,
+   1,
+   "VAE"
+  ],
+  [
+   3,
+   5,
+   0,
+   7,
+   2,
+   "IMAGE"
+  ],
+  [
+   4,
+   6,
+   0,
+   7,
+   3,
+   "IMAGE"
+  ],
+  [
+   5,
+   1,
+   0,
+   10,
+   0,
+   "MODEL"
+  ],
+  [
+   6,
+   1,
+   0,
+   11,
+   0,
+   "MODEL"
+  ],
+  [
+   7,
+   7,
+   0,
+   11,
+   1,
+   "CONDITIONING"
+  ],
+  [
+   8,
+   8,
+   0,
+   12,
+   0,
+   "NOISE"
+  ],
+  [
+   9,
+   11,
+   0,
+   12,
+   1,
+   "GUIDER"
+  ],
+  [
+   10,
+   9,
+   0,
+   12,
+   2,
+   "SAMPLER"
+  ],
+  [
+   11,
+   10,
+   0,
+   12,
+   3,
+   "SIGMAS"
+  ],
+  [
+   12,
+   7,
+   1,
+   12,
+   4,
+   "LATENT"
+  ],
+  [
+   13,
+   12,
+   0,
+   13,
+   0,
+   "LATENT"
+  ],
+  [
+   14,
+   3,
+   0,
+   13,
+   1,
+   "VAE"
+  ],
+  [
+   15,
+   12,
+   0,
+   14,
+   0,
+   "LATENT"
+  ],
+  [
+   16,
+   4,
+   0,
+   14,
+   1,
+   "VAE"
+  ],
+  [
+   17,
+   13,
+   0,
+   15,
+   0,
+   "IMAGE"
+  ],
+  [
+   18,
+   14,
+   0,
+   15,
+   1,
+   "AUDIO"
+  ],
+  [
+   19,
+   15,
+   0,
+   16,
+   0,
+   "VIDEO"
+  ]
+ ],
+ "groups": [
+  {
+   "id": 1,
+   "title": "1. Models (do not change: this is what makes it fast with no quality loss)",
+   "bounding": [
+    -20,
+    -60,
+    460,
+    660
+   ],
+   "color": "#3f789e",
+   "font_size": 24,
+   "flags": {}
+  },
+  {
+   "id": 2,
+   "title": "2. Prompt + optional first / last frame (purple = off, Ctrl+B = on)",
+   "bounding": [
+    480,
+    -60,
+    860,
+    880
+   ],
+   "color": "#8a6d3b",
+   "font_size": 24,
+   "flags": {}
+  },
+  {
+   "id": 3,
+   "title": "3. Sampling (8 turbo steps, cfg 1)",
+   "bounding": [
+    1380,
+    -60,
+    720,
+    560
+   ],
+   "color": "#3f789e",
+   "font_size": 24,
+   "flags": {}
+  },
+  {
+   "id": 4,
+   "title": "4. Decode + save (mp4 with sound, 24 fps)",
+   "bounding": [
+    2140,
+    -60,
+    900,
+    660
+   ],
+   "color": "#3f789e",
+   "font_size": 24,
+   "flags": {}
+  }
+ ],
+ "config": {},
+ "extra": {
+  "ds": {
+   "scale": 0.62,
+   "offset": [
+    560,
+    140
+   ]
+  },
+  "frontendVersion": "1.52.7"
+ },
+ "version": 0.4
+}

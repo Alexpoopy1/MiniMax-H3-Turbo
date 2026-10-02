@@ -40,6 +40,16 @@ _ACT_MIB_PER_TOKEN = 0.18  # measured unchunked activation peak of the DiT: 0.15
 _MIN_BUDGET = 1 << 30  # never plan the weights into less than this when ComfyUI offers a token amount
 
 
+def _park_headroom() -> int:
+    """Free RAM to keep when page-locking the blocks that leave the GPU: ComfyUI's RAM-pressure headroom (it would evict this very
+    model below it) plus whatever the H3 video VAE still has to page-lock at its first decode."""
+    try:
+        from .comfy_h3_vae import pending_reserve_bytes, ram_headroom
+    except ImportError:
+        from comfy_h3_vae import pending_reserve_bytes, ram_headroom
+    return ram_headroom() + (512 << 20) + pending_reserve_bytes()
+
+
 class _LoraKeyStub(torch.nn.Module):
     """Zero-element parameter named like a real linear so ComfyUI's LoRA key mapping finds keys, and add_patches can refuse them."""
 
@@ -137,7 +147,7 @@ class H3TurboDiT(torch.nn.Module):
                 return 0
             before = e.provider.device_bytes()
             try:
-                e.provider.resize(0, 0)
+                e.provider.resize(0, 0, ram_headroom_bytes=_park_headroom())
             except Exception as err:  # never leave VRAM pinned because parking failed: fall back to a full close
                 LOG.warning("H3-Turbo engine: parking failed (%r); closing it", err)
                 return self.close_engine()
@@ -158,7 +168,7 @@ class H3TurboDiT(torch.nn.Module):
             before, ring_bytes, r = p.device_bytes(), len(p._slots) * blk, len(p._resident)
             keep = r if memory_to_free <= ring_bytes else max(0, r - -(-(memory_to_free - ring_bytes) // blk))
             try:
-                p.resize(keep, 0)
+                p.resize(keep, 0, ram_headroom_bytes=_park_headroom())
             except Exception as err:
                 LOG.warning("H3-Turbo engine: shrink failed (%r); closing it", err)
                 return self.close_engine()
